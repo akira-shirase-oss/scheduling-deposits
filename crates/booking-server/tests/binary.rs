@@ -195,3 +195,26 @@ async fn a_bad_configuration_is_refused_with_every_problem() {
         assert!(out.contains(expected), "{expected} missing from {out}");
     }
 }
+
+#[tokio::test]
+async fn startup_refuses_unresolvable_zones() {
+    let db = TestDb::new().await;
+    let workspace = uuid::Uuid::now_v7();
+    db.exec_as(
+        Role::Admin,
+        &format!(
+            "INSERT INTO workspaces (id, name) VALUES ('{workspace}', 'Zones');
+             INSERT INTO businesses (workspace_id, name, time_zone, currency, slot_step_minutes,
+                 min_notice_minutes, max_advance_days, hold_minutes)
+             VALUES ('{workspace}', 'Zones', 'Mars/Olympus_Mons', 'EUR', 15, 0, 60, 10);"
+        ),
+    )
+    .await;
+    // A zone the host's zone database does not have (as when tzdata is missing or older
+    // than the zone): it refuses and names it. jiff falls back from an unusable TZDIR to
+    // the system directories, so an absent zone is the faithful stand-in.
+    let (code, out) = run_to_exit(&db.url(), &[]).await;
+    assert_eq!(code, 5, "{out}");
+    assert!(out.contains("Mars/Olympus_Mons"), "{out}");
+    db.cleanup().await;
+}

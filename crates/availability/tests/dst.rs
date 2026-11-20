@@ -322,11 +322,14 @@ fn queries_out_of_bounds_are_refused() {
         slots(&tz, &[], &[], service(60, 0, 0), &q),
         Err(availability::Error::Range)
     );
-    q.days = availability::MAX_DAYS + 1;
+    // Literals, not the constant: the limit's proof moves the constant.
+    q.days = 63;
     assert_eq!(
         slots(&tz, &[], &[], service(60, 0, 0), &q),
         Err(availability::Error::Range)
     );
+    q.days = 62;
+    assert!(slots(&tz, &[], &[], service(60, 0, 0), &q).is_ok());
     q.days = 1;
     q.step_minutes = 7;
     assert_eq!(
@@ -347,7 +350,7 @@ fn queries_out_of_bounds_are_refused() {
 #[test]
 fn too_many_staff_are_refused() {
     let tz = TimeZone::get("UTC").unwrap();
-    let crowd: Vec<Staff> = (0..=availability::MAX_STAFF)
+    let crowd: Vec<Staff> = (0..1_001_usize)
         .map(|i| Staff {
             id: Uuid::from_u128(u128::try_from(i).unwrap()),
             weekly: Vec::new(),

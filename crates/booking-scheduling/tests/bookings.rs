@@ -18,38 +18,67 @@ use common::{Kit, ahead};
 use serde_json::json;
 
 const N: usize = 32;
+/// Parallel holds per round (`docs/END_GOAL.md`, failure case 1).
+const RACERS: usize = 64;
+
+/// Rounds of [`RACERS`] parallel holds, each round on a fresh slot; `BOOKING_HOLD_ROUNDS`
+/// raises it (the end goal's 1,000 rounds), the default keeps the gate quick.
+fn rounds() -> usize {
+    std::env::var("BOOKING_HOLD_ROUNDS")
+        .ok()
+        .and_then(|r| r.parse().ok())
+        .unwrap_or(20)
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn parallel_holds_for_one_slot_have_exactly_one_winner() {
+async fn concurrent_holds_admit_exactly_one() {
     let kit = Arc::new(Kit::new().await);
     let t = Arc::new(kit.tenant("race@example.test", "UTC").await);
-    let (_, start) = ahead(7, "10:00");
-    let barrier = Arc::new(tokio::sync::Barrier::new(N));
-    let mut tasks = Vec::new();
-    for i in 0..N {
-        let (kit, t, start, barrier) = (kit.clone(), t.clone(), start.clone(), barrier.clone());
-        tasks.push(tokio::spawn(async move {
-            barrier.wait().await;
-            kit.hold(&t, t.staff[0], &start, &format!("race-{i}")).await
-        }));
-    }
-    let mut won = 0;
-    let mut taken = 0;
-    for task in tasks {
-        let answer = task.await.unwrap();
-        match answer.status {
-            StatusCode::CREATED => won += 1,
-            StatusCode::CONFLICT if answer.code() == Some("slot_taken") => taken += 1,
-            other => panic!("unexpected {other}: {}", answer.body),
+    let rounds = rounds();
+    for round in 0..rounds {
+        // 08:00 + 45 min × round, wrapping days: every round its own slot.
+        let minutes = 8 * 60 + 45 * (round % 13);
+        let (_, start) = ahead(
+            7 + i64::try_from(round / 13).unwrap(),
+            &format!("{:02}:{:02}", minutes / 60, minutes % 60),
+        );
+        let barrier = Arc::new(tokio::sync::Barrier::new(RACERS));
+        let mut tasks = Vec::new();
+        for i in 0..RACERS {
+            let (kit, t, start, barrier) = (kit.clone(), t.clone(), start.clone(), barrier.clone());
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                kit.hold(&t, t.staff[0], &start, &format!("race-{round}-{i}"))
+                    .await
+            }));
         }
+        let mut won = 0;
+        let mut taken = 0;
+        for task in tasks {
+            let answer = task.await.unwrap();
+            match answer.status {
+                StatusCode::CREATED => won += 1,
+                StatusCode::CONFLICT if answer.code() == Some("slot_taken") => taken += 1,
+                other => panic!("unexpected {other}: {}", answer.body),
+            }
+        }
+        assert_eq!((won, taken), (1, RACERS - 1), "round {round}");
     }
-    assert_eq!((won, taken), (1, N - 1));
     let live: i64 =
         sqlx::query_scalar("SELECT count(*) FROM bookings WHERE status IN ('held', 'confirmed')")
             .fetch_one(&kit.db.pool)
             .await
             .unwrap();
-    assert_eq!(live, 1);
+    assert_eq!(live, i64::try_from(rounds).unwrap());
+    let overlaps: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM bookings a JOIN bookings b ON a.business_id = b.business_id
+            AND a.staff_id = b.staff_id AND a.id < b.id AND a.blocked && b.blocked
+          WHERE a.status IN ('held', 'confirmed') AND b.status IN ('held', 'confirmed')",
+    )
+    .fetch_one(&kit.db.pool)
+    .await
+    .unwrap();
+    assert_eq!(overlaps, 0);
     drop(t);
     Arc::into_inner(kit).unwrap().db.cleanup().await;
 }
@@ -88,7 +117,7 @@ async fn parallel_overlapping_starts_have_exactly_one_winner() {
 }
 
 #[tokio::test]
-async fn buffers_are_inside_the_guarded_range() {
+async fn buffers_are_part_of_the_blocked_range() {
     let kit = Kit::new().await;
     let t = kit.tenant("buffers@example.test", "UTC").await;
     let first = kit.hold(&t, t.staff[0], &ahead(7, "10:00").1, "a").await;

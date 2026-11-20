@@ -86,11 +86,13 @@ impl Kit {
             "/v1",
             booking_accounts::router(accounts.clone()).merge(product),
         );
-        let app = stack::apply(
-            app,
-            StackLimits::default(),
-            Arc::new(ErrorWindow::default()),
-        );
+        // The request deadline is the stack's own tests' subject; here it only must not turn
+        // a slow, shared machine into a 503 (no test may depend on machine speed).
+        let limits = StackLimits {
+            request_timeout: std::time::Duration::from_secs(120),
+            ..StackLimits::default()
+        };
+        let app = stack::apply(app, limits, Arc::new(ErrorWindow::default()));
         Self {
             db,
             app,
