@@ -493,7 +493,7 @@ async fn availability(
             service_of(&inputs),
             &query_of(&inputs, from, days),
             after,
-            domain::MAX_SLOTS + 1,
+            domain::MAX_SLOTS.saturating_add(1),
         )
         .map_err(|e| engine_error(&e));
         let out = slots.map(|slots| {
