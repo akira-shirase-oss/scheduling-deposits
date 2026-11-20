@@ -1,7 +1,7 @@
 //! What one caller may make the server do (D-017): the availability work budget and its
 //! cursor, and the per-principal read rate, hold rate and open-hold cap. Each test is the
 //! proof of one `LIMIT(...)` line (`scripts/prove-limits.sh`).
-#![expect(clippy::unwrap_used, reason = "test fixtures")]
+#![allow(clippy::unwrap_used, reason = "tests")]
 
 mod common;
 

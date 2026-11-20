@@ -7,7 +7,7 @@
 //
 // Thresholds were written before the first run (D-012) and are not tuned to a result.
 //
-// Env: BASE_URL, TOKEN, WORKSPACE, SERVICE, DATES (comma-separated YYYY-MM-DD), MODE
+// Env: BASE_URL, TOKEN, WORKSPACE, SERVICE, WORST_WORKSPACE, WORST_TOKEN, DATES (comma-separated YYYY-MM-DD), MODE
 // (smoke | full), RATE (requests/s); TOTAL for plumbing probes only.
 import http from 'k6/http';
 import { check } from 'k6';
@@ -19,6 +19,8 @@ const TOTAL = __ENV.TOTAL ? parseInt(__ENV.TOTAL, 10) : MODE === 'full' ? 100000
 const BASE = `${__ENV.BASE_URL}/v1/workspaces/${__ENV.WORKSPACE}/availability?service=${__ENV.SERVICE}`;
 const DATES = (__ENV.DATES || '').split(',');
 const AUTH = { headers: { Authorization: `Bearer ${__ENV.TOKEN}` } };
+const WORST_AUTH = { headers: { Authorization: `Bearer ${__ENV.WORST_TOKEN}` } };
+const WORST = `${__ENV.BASE_URL}/v1/workspaces/${__ENV.WORST_WORKSPACE}/availability?service=${__ENV.SERVICE}`;
 
 const shed = new Rate('shed');
 const unexpected = new Counter('unexpected_status');
@@ -32,14 +34,16 @@ export const options = {
       rate: RATE,
       timeUnit: '1s',
       duration: `${Math.ceil(TOTAL / RATE)}s`,
-      preAllocatedVUs: 1000,
-      maxVUs: 1000,
+      preAllocatedVUs: 500,
+      maxVUs: 500,
     },
   },
   thresholds: {
     http_req_failed: ['rate<0.001'],
     'http_req_duration{days:1}': ['p(95)<50', 'p(99)<100'],
     'http_req_duration{days:7}': ['p(99)<250'],
+    // D-011's worst case (1% of reads): 100 staff, 5-minute grid, 10 days, one full page.
+    'http_req_duration{days:worst}': ['p(99)<250'],
     shed: ['rate<0.001'],
     unexpected_status: ['count<1'],
     empty_answers: ['count<1'],
@@ -49,8 +53,10 @@ export const options = {
 
 export default function () {
   const date = DATES[Math.floor(Math.random() * DATES.length)];
-  const days = Math.random() < 0.1 ? 7 : 1;
-  const res = http.get(`${BASE}&from=${date}&days=${days}`, { ...AUTH, tags: { days: `${days}` } });
+  const roll = Math.random();
+  const res = roll < 0.01
+    ? http.get(`${WORST}&from=${date}&days=10`, { ...WORST_AUTH, tags: { days: 'worst' } })
+    : http.get(`${BASE}&from=${date}&days=${roll < 0.11 ? 7 : 1}`, { ...AUTH, tags: { days: `${roll < 0.11 ? 7 : 1}` } });
   shed.add(res.status === 503);
   if (!check(res, { 'status 200': (r) => r.status === 200 })) {
     if (res.status !== 503) unexpected.add(1);

@@ -59,7 +59,7 @@ mutations=(
   "availability-cells|crates/booking-scheduling/src/routes.rs|s\.limits\.max_cells=>u64::MAX|booking-scheduling|budgets|a_read_over_the_work_budget_is_refused_before_the_engine_runs"
   "availability-read-rate|crates/booking-scheduling/src/routes.rs|rate_limited\(&s\.reads, principal\)\?;=>let _ = rate_limited(&s.reads, principal);|booking-scheduling|budgets|availability_reads_are_rate_limited_per_principal"
   "hold-rate|crates/booking-scheduling/src/routes.rs|rate_limited\(&s\.holds, principal\)\?;=>let _ = rate_limited(&s.holds, principal);|booking-scheduling|budgets|holds_are_rate_limited_per_principal"
-  "open-holds|crates/booking-scheduling/src/store.rs|open >= i64::from\(open_holds\)=>false|booking-scheduling|budgets|open_holds_are_capped_per_principal_even_concurrently"
+  "open-holds|crates/booking-scheduling/src/store.rs|open > i64::from\(open_holds\)=>false|booking-scheduling|budgets|open_holds_are_capped_per_principal_even_concurrently"
   "hold-start-window|crates/booking-scheduling/src/domain.rs|!\(-HOLD_START_PAST_SECONDS\.\.=HOLD_START_AHEAD_SECONDS\)\.contains\(&offset\)=>false|booking-scheduling|lib|domain::tests::a_hold_starts_within_a_day_before_now_to_366_days_after"
   "booking-list|crates/booking-scheduling/src/domain.rs|= 500;=>= i64::MAX;|booking-scheduling|limits|a_booking_list_returns_at_most_its_cap"
 )

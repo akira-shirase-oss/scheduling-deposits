@@ -874,27 +874,6 @@ pub async fn hold(
     .fetch_optional(&mut *tx)
     .await?;
     if replay.is_none() {
-        // The principal's open holds, counted under a lock on the principal, so concurrent
-        // holds cannot pass the cap together.
-        sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))",
-        )
-        .bind(business)
-        .bind(principal)
-        .execute(&mut *tx)
-        .await?;
-        let open: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM bookings
-              WHERE business_id = $1 AND held_by = $2 AND status = 'held' AND hold_expires_at > now()",
-        )
-        .bind(business)
-        .bind(principal)
-        .fetch_one(&mut *tx)
-        .await?;
-        // LIMIT(open-holds)
-        if open >= i64::from(open_holds) {
-            return Err(SchedulingError::Limit("open_holds"));
-        }
         // One staff member's holds are decided one at a time: the exclusion check then
         // meets only committed rows and answers 409, never a wait that ends in a deadlock
         // or a lock timeout (503).
@@ -928,6 +907,28 @@ pub async fn hold(
     .fetch_optional(&mut *tx)
     .await?;
     let (id, created) = if let Some(id) = inserted {
+        // The principal's open holds, this one included, counted under a lock on the
+        // principal taken last (after the slot is won, so losers never wait for it), so
+        // concurrent holds cannot pass the cap together.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))",
+        )
+        .bind(business)
+        .bind(principal)
+        .execute(&mut *tx)
+        .await?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM bookings
+              WHERE business_id = $1 AND held_by = $2 AND status = 'held' AND hold_expires_at > now()",
+        )
+        .bind(business)
+        .bind(principal)
+        .fetch_one(&mut *tx)
+        .await?;
+        // LIMIT(open-holds)
+        if open > i64::from(open_holds) {
+            return Err(SchedulingError::Limit("open_holds"));
+        }
         (id, true)
     } else {
         let existing: Uuid = sqlx::query_scalar(

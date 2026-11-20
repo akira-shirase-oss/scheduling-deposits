@@ -43,6 +43,16 @@ Reads: `GET /business`, `/services`, `/services/{id}`, `/staff` and `/staff/{id}
 `{service_id, time_zone, from, days, as_of, slots: [{start, end, staff_id}], truncated}`.
 Slots cover the active staff who perform the active service, or the one `staff` given.
 They are sorted by start, then staff, and capped at 5,000 (`truncated: true` past that).
+A truncated answer carries `next_after`, the start of its last slot; asking again with
+`after=<that instant>` returns the slots starting after it, so a client pages through the
+whole range in order (`invalid_after` if it is not an RFC 3339 instant).
+
+A read is sized before any work: staff × days × grid points a day over
+`BOOKING_AVAILABILITY_MAX_CELLS` (default 300,000) is refused with 422 `too_much_work`;
+fewer days or one `staff` fits. The engine runs off the async workers, at most
+`BOOKING_COMPUTE_PERMITS` at once, walking one grid in start order and stopping at
+5,001 slots. Each principal (member or token) has a read rate
+(`BOOKING_READ_RATE_PER_SECOND`, 429 `rate_limited` past it) (D-017).
 The inputs are read in one `REPEATABLE READ` snapshot. "Now" is the database clock
 (`as_of`), the same clock that expires holds (D-009).
 
@@ -113,7 +123,12 @@ Book action.
 | Exceptions per business | 1,000 |
 | Weekly ranges per staff member | 50 |
 | Dates per availability read | 31 |
-| Slots per answer | 5,000 |
+| Slots per answer | 5,000 (then `after=`) |
+| Grid points per read (staff × days × points a day) | 300,000 |
+| Availability reads per principal | 20/s, burst 60 |
+| Holds per principal | 2/s, burst 20 |
+| Open holds per principal per business | 50 |
+| Hold start | now − 1 day ..= now + 366 days |
 | Bookings per list | 500 |
 | Engine: dates per query | 62 |
 | Engine: staff per query | 1,000 |

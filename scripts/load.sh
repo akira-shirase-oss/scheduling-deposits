@@ -60,8 +60,11 @@ ctl "$db" bootstrap >/dev/null
 ctl "$db" migrate >/dev/null
 target/release/examples/smtp-sink "127.0.0.1:$sink_port" "$work/mail.log" >"$work/sink.log" 2>&1 &
 pids+=($!)
+# One session and one token drive the whole run: their per-principal budgets (D-017) are
+# opened so the run measures the booking path; tests/budgets.rs proves the budgets.
 BOOKING_DATABASE_URL="$(role_url booking_app "$APP_PW" "$db")" BOOKING_LISTEN="127.0.0.1:$port" \
   BOOKING_SMTP_RELAY="127.0.0.1:$sink_port" BOOKING_PUBLIC_URL="$base" BOOKING_COOKIE_SECURE=false \
+  BOOKING_READ_RATE_PER_SECOND=100000 BOOKING_HOLD_RATE_PER_SECOND=100000 BOOKING_OPEN_HOLDS_PER_PRINCIPAL=1000000 \
   BOOKING_LOG=warn BOOKING_MAX_IN_FLIGHT="${MAX_IN_FLIGHT:-256}" target/release/booking-server >"$work/server.log" 2>&1 &
 server=$!
 pids+=($server)
@@ -80,10 +83,10 @@ token="$(api POST "/v1/workspaces/$workspace/tokens" '{"name":"load"}' | jq -r '
 status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$base/v1/workspaces/$workspace/hello")"
 [ "$status" = 200 ] || { echo "error: the seeded token read answered $status" >&2; exit 1; }
 session="$(awk '$6 == "booking_session" { print $7 }' "$work/cookies")"
-service="" dates="" slots=""
+service="" dates="" slots="" set_a="" set_b=""
 if [ "$scenario" != service ]; then
   w="/v1/workspaces/$workspace"
-  api PUT "$w/business" '{"name":"Load","time_zone":"UTC","currency":"EUR","slot_step_minutes":15,"min_notice_minutes":0,"max_advance_days":365,"hold_minutes":60}' >/dev/null
+  api PUT "$w/business" '{"name":"Load","time_zone":"UTC","currency":"EUR","slot_step_minutes":15,"min_notice_minutes":0,"max_advance_days":365,"hold_minutes":'"$([ "$scenario" = hold-contention ] && echo 1 || echo 60)"'}' >/dev/null
   service="00000000-0000-7000-8000-000000000001"
   api PUT "$w/services/$service" '{"name":"Load","duration_minutes":30,"buffer_after_minutes":15,"price_minor":4000,"deposit":{"kind":"percent","percent":25}}' | jq -e '.id' >/dev/null
   hours="$(jq -cn '[range(1; 8) | {weekday: ., start: "00:00", end: "24:00"}]')"
@@ -96,12 +99,36 @@ if [ "$scenario" != service ]; then
       day="$(date -u -d "+$d day" +%F)"
       api POST "$w/holds" "{\"service_id\":\"$service\",\"staff_id\":\"$staff\",\"starts_at\":\"${day}T12:00:00Z\",\"customer_name\":\"Seed\",\"idempotency_key\":\"seed-$i-$d\"}" | jq -e '.id' >/dev/null
     done
-    hot="$(date -u -d '+3 day' +%F)"
-    for t in 09:00 09:15 09:30 09:45 10:00; do slots="${slots:+$slots,}$staff@${hot}T$t:00Z"; done
+    # Hot starts an hour apart: a 30-minute service with 15 minutes after never overlaps
+    # the next, so every hot slot has exactly one winner per round.
+    for t in 06:00 07:00 08:00 09:00 10:00; do
+      set_a="${set_a:+$set_a,}$staff@$(date -u -d '+3 day' +%F)T$t:00Z"
+      set_b="${set_b:+$set_b,}$staff@$(date -u -d '+4 day' +%F)T$t:00Z"
+    done
   done
+  hot="$(date -u -d '+3 day' +%F)"
+  slots="$set_a;$set_b"
   dates="$(for d in $(seq 1 28); do date -u -d "+$d day" +%F; done | paste -sd, -)"
   status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$base$w/availability?service=$service&from=${hot}")"
   [ "$status" = 200 ] || { echo "error: the seeded availability read answered $status" >&2; exit 1; }
+fi
+worst_workspace="" worst_token=""
+if [ "$scenario" = availability-read ]; then
+  # The D-011 worst case: 100 staff open 00:00-24:00 on a 5-minute grid, read 10 days at a
+  # time without staff= (288,000 grid points, under the default work budget of 300,000).
+  worst_workspace="$(api POST /v1/workspaces '{"name":"Worst"}' | jq -r '.id')"
+  worst_token="$(api POST "/v1/workspaces/$worst_workspace/tokens" '{"name":"load"}' | jq -r '.token')"
+  w="/v1/workspaces/$worst_workspace"
+  api PUT "$w/business" '{"name":"Worst","time_zone":"UTC","currency":"EUR","slot_step_minutes":5,"min_notice_minutes":0,"max_advance_days":365,"hold_minutes":60}' >/dev/null
+  api PUT "$w/services/$service" '{"name":"Worst","duration_minutes":30,"buffer_after_minutes":15,"price_minor":4000,"deposit":{"kind":"percent","percent":25}}' | jq -e '.id' >/dev/null
+  for i in $(seq 1 100); do
+    staff="00000000-0000-7000-a000-$(printf '%012d' "$i")"
+    api PUT "$w/staff/$staff" "{\"name\":\"Staff $i\"}" | jq -e '.id' >/dev/null
+    api PUT "$w/staff/$staff/services" "{\"service_ids\":[\"$service\"]}" >/dev/null
+    api PUT "$w/staff/$staff/hours" "{\"hours\":$hours}" >/dev/null
+  done
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $worst_token" "$base$w/availability?service=$service&from=${hot}&days=10")"
+  [ "$status" = 200 ] || { echo "error: the worst-case availability read answered $status" >&2; exit 1; }
 fi
 if $setup_only; then
   echo "setup ok ($scenario): server ready, account, workspace and token seeded; a token read answers 200 (no load offered)"
@@ -113,16 +140,29 @@ summary="$work/summary.json"
 load_before="$(uptime | sed 's/.*load averages*: *//')"
 set +e
 BASE_URL="$base" TOKEN="$token" SESSION="$session" WORKSPACE="$workspace" SERVICE="$service" \
-  DATES="$dates" SLOTS="$slots" MODE="$mode" RATE="$rate" TOTAL="${TOTAL:-}" \
+  DATES="$dates" SLOTS="$slots" WORST_WORKSPACE="$worst_workspace" WORST_TOKEN="$worst_token" MODE="$mode" RATE="$rate" TOTAL="${TOTAL:-}" \
   k6 run --quiet --summary-export "$summary" "perf/scenarios/$scenario.js"
 k6_status=$?
 invariant=null
 if [ "$scenario" = hold-contention ]; then
-  overlaps="$(pg psql -d "$db" -XAtq -c "SELECT count(*) FROM bookings a JOIN bookings b
-      ON a.business_id = b.business_id AND a.staff_id = b.staff_id AND a.id < b.id AND a.blocked && b.blocked
-     WHERE a.status IN ('held', 'confirmed') AND b.status IN ('held', 'confirmed')")"
+  # Ranges recomputed from the start and the service, not read from the trigger's column.
+  overlaps="$(pg psql -d "$db" -XAtq -c "WITH r AS (
+      SELECT k.business_id, k.staff_id, k.id, tstzrange(
+               k.starts_at - make_interval(mins => s.buffer_before_minutes),
+               k.starts_at + make_interval(mins => s.duration_minutes + s.buffer_after_minutes)) AS span
+        FROM bookings k JOIN services s ON s.business_id = k.business_id AND s.id = k.service_id
+       WHERE k.status IN ('held', 'confirmed'))
+    SELECT count(*) FROM r a JOIN r b
+      ON a.business_id = b.business_id AND a.staff_id = b.staff_id AND a.id < b.id AND a.span && b.span")"
   winners="$(pg psql -d "$db" -XAtq -c "SELECT count(*) FROM bookings WHERE idempotency_key LIKE 'load-%'")"
-  invariant="{\"overlapping_live_pairs\":$overlaps,\"holds_created\":$winners,\"hot_slots\":$(tr ',' '\n' <<<"$slots" | wc -l)}"
+  expired="$(pg psql -d "$db" -XAtq -c "SELECT count(*) FROM bookings WHERE idempotency_key LIKE 'load-%' AND status = 'expired'")"
+  hot_slots="$(tr ',' '\n' <<<"$set_a" | wc -l | tr -d ' ')"
+  total="${TOTAL:-$([ "$mode" = full ] && echo 1000000 || echo 100000)}"
+  per_round=$(( rate * 45 )); rounds=$(( (total + per_round - 1) / per_round ))
+  expected=$(( rounds * hot_slots ))
+  invariant="{\"overlapping_live_pairs\":$overlaps,\"holds_created\":$winners,\"holds_expected\":$expected,\"rounds\":$rounds,\"hot_slots\":$hot_slots,\"expired_by_the_database\":$expired}"
+  if [ "$winners" != "$expected" ]; then echo "error: $winners holds created, $expected expected" >&2; k6_status=99; fi
+  if (( rounds > 2 )) && [ "$expired" = 0 ]; then echo "error: no hold expired across $rounds rounds" >&2; k6_status=99; fi
   if [ "$overlaps" != 0 ]; then echo "error: $overlaps overlapping live bookings" >&2; k6_status=99; fi
 fi
 set -e
@@ -154,8 +194,8 @@ mkdir -p "$outdir"
 out="$outdir/${stamp}-${scenario}-${mode}.json"
 case "$scenario" in
   service) mix="90% token-authenticated workspace reads, 10% /livez" ;;
-  availability-read) mix="token-authenticated availability reads, 90% one day, 10% a week, 28 dates, 10 staff" ;;
-  hold-contention) mix="session-authenticated holds racing for 50 hot slots (10 staff x 5 starts), fresh idempotency keys" ;;
+  availability-read) mix="token-authenticated availability reads, 89% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days)" ;;
+  hold-contention) mix="session-authenticated holds racing for 50 non-overlapping hot slots (10 staff x 5 starts) per 45 s round, two alternating sets, one-minute holds, fresh idempotency keys" ;;
 esac
 jq -n --arg mode "$mode" --arg stamp "$stamp" --arg commit "$commit" --argjson dirty "$dirty" \
   --arg cpu "$cpu" --arg cores "$cores" --arg mem_gb "$mem_gb" --arg os "$os" \

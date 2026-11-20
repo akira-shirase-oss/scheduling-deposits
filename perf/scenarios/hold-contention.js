@@ -19,7 +19,13 @@ const MODE = __ENV.MODE || 'smoke';
 const RATE = parseInt(__ENV.RATE || '1000', 10);
 const TOTAL = __ENV.TOTAL ? parseInt(__ENV.TOTAL, 10) : MODE === 'full' ? 1000000 : 100000;
 const URL = `${__ENV.BASE_URL}/v1/workspaces/${__ENV.WORKSPACE}/holds`;
-const SLOTS = (__ENV.SLOTS || '').split(',').map((s) => s.split('@'));
+// Two sets of hot slots (`;`-separated), none overlapping another even with its buffers;
+// rounds of 45 s alternate between them. Holds last one minute, so a set's holds have
+// expired before its next round and the database's expiry decides that round's winners.
+const SETS = (__ENV.SLOTS || '').split(';').map((set) => set.split(',').map((s) => s.split('@')));
+const PER_ROUND = RATE * 45;
+const ROUNDS = Math.ceil(TOTAL / PER_ROUND);
+const HOT = SETS[0].length;
 const PARAMS = {
   headers: { Cookie: `booking_session=${__ENV.SESSION}`, 'content-type': 'application/json' },
   responseCallback: http.expectedStatuses(201, 409),
@@ -38,8 +44,8 @@ export const options = {
       rate: RATE,
       timeUnit: '1s',
       duration: `${Math.ceil(TOTAL / RATE)}s`,
-      preAllocatedVUs: 1000,
-      maxVUs: 1000,
+      preAllocatedVUs: 500,
+      maxVUs: 500,
     },
   },
   thresholds: {
@@ -48,14 +54,15 @@ export const options = {
     shed: ['rate<0.001'],
     unexpected_status: ['count<1'],
     dropped_iterations: ['count<1'],
-    // The guarantee: never more winners than slots (a hold lasts longer than the run's
-    // slice of each slot, so each hot slot is won at most once).
-    holds_created: [`count<=${SLOTS.length}`],
+    // The guarantee, exactly: each hot slot is won once per round, never twice.
+    holds_created: [`count==${ROUNDS * HOT}`],
   },
 };
 
 export default function () {
-  const [staff, start] = SLOTS[Math.floor(Math.random() * SLOTS.length)];
+  const round = Math.floor(exec.scenario.iterationInTest / PER_ROUND);
+  const set = SETS[round % SETS.length];
+  const [staff, start] = set[Math.floor(Math.random() * set.length)];
   const key = `load-${exec.vu.idInTest}-${exec.scenario.iterationInTest}`;
   const body = JSON.stringify({
     service_id: __ENV.SERVICE, staff_id: staff, starts_at: start,

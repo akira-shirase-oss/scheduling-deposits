@@ -29,8 +29,8 @@ export const options = {
       rate: RATE,
       timeUnit: '1s',
       duration: `${Math.ceil(TOTAL / RATE)}s`,
-      preAllocatedVUs: 1000,
-      maxVUs: 1000,
+      preAllocatedVUs: 500,
+      maxVUs: 500,
     },
   },
   thresholds: {

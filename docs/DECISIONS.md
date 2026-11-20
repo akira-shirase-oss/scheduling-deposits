@@ -173,3 +173,48 @@ The lookups now read the row in a CTE and update it only when the timestamp is m
 a minute old. `touches::fresh_credentials_are_read_not_rewritten_and_stale_ones_are_touched`
 compares the row's `xmin` across reads. It failed before the change, and both misses are
 kept in the PR.
+
+## D-017 — What one caller may make the server do
+
+A read's cost is staff × days × grid points a day, so it is computed from the request
+and the business before anything is loaded, and refused past a budget (default 300,000:
+the D-011 worst case of 100 staff on a 5-minute grid fits for 10 days). The engine walks
+one grid once, in start order across staff, and stops at the answer cap plus one, so
+work and memory per read are bounded by the budget and the page, not by the range; the
+rest is reached with an `after=` cursor. It runs under `spawn_blocking` behind a
+semaphore, so it never occupies an async worker and a burst of reads queues for CPU with
+a deadline instead of all running at once. Busy time is grouped per staff member in SQL.
+
+Per principal (member or token, keyed by its id): a read rate, a hold rate, and a cap on
+unexpired holds in a business (END_GOAL invariant 9). The cap is counted after the slot
+is won, under a transaction lock on the principal, so concurrent holds cannot pass it
+together and losers of a slot never wait for it. A hold's start must lie within a day
+before now and 366 days after, checked before any database work. A hold first locks its
+staff row, so holds for one staff member are decided one at a time and a conflict is
+always a 409, never a lock wait that ends in a 503. Each bound has a `LIMIT(...)` marker
+and a test that fails without it (`tests/budgets.rs`, `scripts/prove-limits.sh`).
+
+The rates live in memory: a restart resets them, and they are per process (D-003's one
+server). The load scenarios drive everything through one session or token, so
+`scripts/load.sh` raises these per-principal budgets for its run and says so.
+
+## D-018 — Where the availability-read median went
+
+The server now records request, authorization, pool-wait, database and compute times
+(`booking_http::timing`) and reports them when it drains; `scripts/load.sh` stores them
+with the CPU seconds in the result. On the CI runner, with D-016 in place and k6's
+`preAllocatedVUs` raised to `maxVUs`, the full availability-read run measured a client
+median of 2.0 ms against a server request median of 2.2 ms (pool wait p99 1.5 ms). The
+earlier 315 ms median was therefore spent before requests reached a handler: k6 growing
+its VU pool mid-run. The remaining 1.6% failures were requests that never reached the
+server, because 1,000 keep-alive VUs exceeded the server's 512-connection cap. The
+scenarios now preallocate 500 VUs (below the cap, with the server at its production
+defaults); every threshold is unchanged.
+
+## D-019 — Blockers carried into M3 (before any public booking page)
+
+- Confirming a hold is today a plain member action. M3 makes payment the only way a
+  booking becomes confirmed (END_GOAL invariant 2); until then this path is fail-open
+  against that invariant and must be removed or restricted to the payment flow.
+- Idempotency keys are unique per business, not per caller. Before a public page, keys
+  are scoped to the caller that made them.
