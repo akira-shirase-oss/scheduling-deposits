@@ -73,6 +73,43 @@ jobs:
           eval "$(scripts/stack.sh env)"
           scripts/prove-limits.sh
 
+  # The product's load scenarios at full shape (1,000,000 requests each) on a hosted
+  # runner; the result file is uploaded, a threshold miss fails the job and is kept.
+  load:
+    name: load ${{ matrix.scenario }} (scripts/load.sh, MODE=full)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario: [availability-read, hold-contention]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned toolchain
+        run: |
+          channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+          rustup toolchain install "$channel" --profile minimal --component clippy,rustfmt
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: k6 (pinned by checksum)
+        run: |
+          scripts/install-k6.sh "$RUNNER_TEMP/bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Database
+        run: scripts/stack.sh up
+      - name: Full run
+        run: |
+          eval "$(scripts/stack.sh env)"
+          SCENARIO=${{ matrix.scenario }} MODE=full scripts/load.sh
+      - name: Keep the result, pass or miss
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: load-${{ matrix.scenario }}
+          path: perf/results/
+          if-no-files-found: warn
+
   # The production path, end to end: the operator guide's install, check, upgrade and
   # rollback blocks run as written on an Ubuntu 24.04 VM with systemd
   # (scripts/test-install.sh): hardening, env and credentials, the hardened unit,
