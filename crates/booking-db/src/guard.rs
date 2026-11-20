@@ -139,7 +139,7 @@ pub async fn check_at_startup(pool: &PgPool, deadline: std::time::Duration) -> R
     }
 }
 
-/// The current digests of every trigger and function in `public`, for updating the
+/// The current digests of every trigger, exclusion constraint and function in `public`, for updating the
 /// manifest after a migration changes one (`bookingctl digests`).
 pub async fn digests(pool: &PgPool) -> Result<Vec<(String, String, String)>, DbError> {
     Ok(sqlx::query_as(
@@ -147,6 +147,11 @@ pub async fn digests(pool: &PgPool) -> Result<Vec<(String, String, String)>, DbE
            FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
            JOIN pg_namespace n ON n.oid = c.relnamespace
           WHERE n.nspname = 'public' AND NOT t.tgisinternal
+         UNION ALL
+         SELECT 'constraint', c.relname || '.' || k.conname, md5(pg_get_constraintdef(k.oid))
+           FROM pg_constraint k JOIN pg_class c ON c.oid = k.conrelid
+           JOIN pg_namespace n ON n.oid = c.relnamespace
+          WHERE n.nspname = 'public' AND k.contype = 'x'
          UNION ALL
          SELECT 'function', p.proname::text, md5(pg_get_functiondef(p.oid))
            FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

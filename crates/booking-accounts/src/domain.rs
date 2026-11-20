@@ -90,13 +90,19 @@ pub enum Action {
     ManageTokens,
     /// Delete the workspace.
     Delete,
+    /// Change the business's set-up: its profile, services, staff, hours and exceptions.
+    Configure,
+    /// Place, confirm and cancel bookings and holds.
+    Book,
 }
 
 /// The policy table: which role may do what.
 pub const fn allows(role: Role, action: Action) -> bool {
     match action {
-        Action::Read | Action::ListMembers => true,
-        Action::ManageMembers | Action::ManageTokens => matches!(role, Role::Owner | Role::Admin),
+        Action::Read | Action::ListMembers | Action::Book => true,
+        Action::ManageMembers | Action::ManageTokens | Action::Configure => {
+            matches!(role, Role::Owner | Role::Admin)
+        }
         Action::ManageOwners | Action::Delete => matches!(role, Role::Owner),
     }
 }
@@ -176,9 +182,18 @@ mod tests {
     fn the_policy_table() {
         use Action::*;
         for (role, may) in [
-            (Role::Owner, [true, true, true, true, true, true]),
-            (Role::Admin, [true, true, true, false, true, false]),
-            (Role::Member, [true, true, false, false, false, false]),
+            (
+                Role::Owner,
+                [true, true, true, true, true, true, true, true],
+            ),
+            (
+                Role::Admin,
+                [true, true, true, false, true, false, true, true],
+            ),
+            (
+                Role::Member,
+                [true, true, false, false, false, false, false, true],
+            ),
         ] {
             for (action, expected) in [
                 Read,
@@ -187,6 +202,8 @@ mod tests {
                 ManageOwners,
                 ManageTokens,
                 Delete,
+                Configure,
+                Book,
             ]
             .into_iter()
             .zip(may)

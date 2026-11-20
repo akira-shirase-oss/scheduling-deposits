@@ -1,0 +1,19 @@
+[package]
+name = "availability"
+description = "The availability engine: pure, deterministic, DST-correct bookable slots from working hours, exceptions, staff, a service's duration and buffers, and busy ranges."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+jiff.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

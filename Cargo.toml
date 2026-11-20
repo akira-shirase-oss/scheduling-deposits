@@ -16,6 +16,8 @@ publish = false
 booking-http = { path = "crates/booking-http" }
 booking-db = { path = "crates/booking-db" }
 booking-accounts = { path = "crates/booking-accounts" }
+availability = { path = "crates/availability" }
+booking-scheduling = { path = "crates/booking-scheduling" }
 
 # External crates: versions live here only. Minimal features; one async runtime (Tokio). One
 # TLS stack, rustls, and only for the database client: Neon requires TLS. The service itself
@@ -28,6 +30,10 @@ hex = "0.4.3"
 http-body-util = "0.1.5"
 # Driven directly for the connection bounds (header-read timeout, write stall, request cap,
 # lifetime, connection cap); axum::serve exposes none of them.
+# Time zones and civil time for the availability engine (KNOWLEDGE.md section 2): the
+# system database only (tzdata on the host; the server refuses to start on a zone it cannot
+# resolve), no bundled copy.
+jiff = { version = "1.0.1", default-features = false, features = ["std", "tz-system", "tzdb-zoneinfo"] }
 hyper = { version = "1.12", default-features = false, features = ["server", "http1"] }
 hyper-util = { version = "0.1.21", default-features = false, features = ["tokio", "server", "service", "http1"] }
 proptest = "1.12.0"

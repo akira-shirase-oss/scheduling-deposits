@@ -42,6 +42,7 @@ expect_failure() {
 expect_failure ARCH_HTTP_BANNED=tokio
 expect_failure ARCH_DOMAIN_PATTERN='pub fn'
 expect_failure ARCH_SHIPPED_FEATURE=json
+expect_failure ARCH_PURE_BANNED=jiff
 scripts/test-architecture-check.sh
 
 step "pins, and that the check can fail on an image and on an action, each alone"

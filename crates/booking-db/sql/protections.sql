@@ -5,7 +5,8 @@
 -- startup and refuses to serve on any row (booking_db::guard::check_runtime), and the
 -- restore drills and the upgrade rehearsal run it on every restored copy.
 --
--- A migration that adds or changes a table, a trigger, a function or a grant updates this
+-- A migration that adds or changes a table, a trigger, an exclusion constraint, a function or
+-- a grant updates this
 -- file in the same commit. The digests are md5(pg_get_triggerdef(oid)) and
 -- md5(pg_get_functiondef(oid)) on a freshly migrated database (`bookingctl digests`
 -- prints them), on the PostgreSQL major the copy runs (18): another major may format a
@@ -14,22 +15,36 @@ WITH expected_triggers (tbl, name, digest) AS (
     -- The events, timing, level and function of each trigger.
     VALUES ('account_events', 'account_events_append_only', 'bd4b64bf88a43d91c8f0229e240a55e1'),
            ('account_events', 'account_events_no_truncate', '91d454c7d8890d590a6e8305d980409e'),
-           ('account_events', 'account_events_stamp', '0558d12b98ccd7beaf941f03835399de')
+           ('account_events', 'account_events_stamp', '0558d12b98ccd7beaf941f03835399de'),
+           ('bookings', 'bookings_prepare', '00a05f4de4ebe79e56e9203588056d76'),
+           ('bookings', 'bookings_transition', '1a77e53e535c83fa3967ce9658a1152d')
+), expected_constraints (tbl, name, digest) AS (
+    -- Every exclusion constraint: md5(pg_get_constraintdef(oid)), predicate included.
+    VALUES ('bookings', 'bookings_no_overlap', 'a329c6afb5f6a75584e06e78c87675b8')
 ), expected_functions (name, digest) AS (
     -- The whole definition, body and settings included.
-    VALUES ('refuse_change', 'aa7b64a277372e0a3e2126f016e3a79d'),
+    VALUES ('bookings_prepare', '37a53e41e9cbe850fd2a4f020c9e2490'),
+           ('bookings_transition', '3865e37c79817cc38683c12157ff6d64'),
+           ('refuse_change', 'aa7b64a277372e0a3e2126f016e3a79d'),
            ('stamp_event', 'a9e1e842d2841cfd8220413bd5548495')
 ), expected_grants (tbl, privileges) AS (
     -- Every table in public, with exactly what booking_app holds on it.
     VALUES ('_sqlx_migrations', 'SELECT'),
            ('account_events', 'INSERT,SELECT'),
            ('api_tokens', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('bookings', 'INSERT,SELECT,UPDATE'),
+           ('businesses', 'DELETE,INSERT,SELECT,UPDATE'),
            ('email_tokens', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('hours_exceptions', 'DELETE,INSERT,SELECT,UPDATE'),
            ('invites', 'DELETE,INSERT,SELECT,UPDATE'),
            ('members', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('services', 'DELETE,INSERT,SELECT,UPDATE'),
            ('sessions', 'DELETE,INSERT,SELECT,UPDATE'),
            ('sign_in_trust', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('staff', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('staff_services', 'DELETE,INSERT,SELECT,UPDATE'),
            ('users', 'DELETE,INSERT,SELECT,UPDATE'),
+           ('weekly_hours', 'DELETE,INSERT,SELECT,UPDATE'),
            ('workspaces', 'DELETE,INSERT,SELECT,UPDATE')
 ), tables AS (
     SELECT c.oid, c.relname, pg_catalog.pg_get_userbyid(c.relowner) AS owner
@@ -67,6 +82,20 @@ SELECT problem FROM (
       JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
      WHERE n.nspname = 'public' AND NOT t.tgisinternal
        AND NOT EXISTS (SELECT 1 FROM expected_triggers e WHERE e.tbl = c.relname AND e.name = t.tgname)
+    UNION ALL
+    SELECT format('constraint %s.%s is missing', e.tbl, e.name)
+      FROM expected_constraints e
+     WHERE NOT EXISTS (
+         SELECT 1 FROM pg_catalog.pg_constraint k
+          WHERE k.conrelid = pg_catalog.to_regclass('public.' || e.tbl) AND k.conname = e.name)
+    UNION ALL
+    SELECT format('constraint %s.%s is not defined as the migrations left it', c.relname, k.conname)
+      FROM pg_catalog.pg_constraint k
+      JOIN pg_catalog.pg_class c ON c.oid = k.conrelid
+      JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+      LEFT JOIN expected_constraints e ON e.tbl = c.relname AND e.name = k.conname
+     WHERE n.nspname = 'public' AND k.contype = 'x'
+       AND pg_catalog.md5(pg_catalog.pg_get_constraintdef(k.oid)) IS DISTINCT FROM e.digest
     UNION ALL
     SELECT format('function %s is missing', e.name)
       FROM expected_functions e

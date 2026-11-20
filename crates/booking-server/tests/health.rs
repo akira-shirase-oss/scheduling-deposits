@@ -29,8 +29,10 @@ async fn app_on(database_url: &str, ready: Duration) -> (axum::Router, Arc<Error
     let accounts = Accounts::new(pool.clone(), Settings::default(), Arc::new(Disabled))
         .await
         .unwrap();
+    let scheduling = booking_scheduling::Scheduling::new(accounts.clone(), pool.clone());
     let router = app(AppState {
         accounts,
+        scheduling,
         health: Health::new(pool, ready, errors.clone(), 50, 20),
         errors: errors.clone(),
         stack: StackLimits::default(),

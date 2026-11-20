@@ -48,6 +48,15 @@ mutations=(
   "password-concurrency|crates/booking-accounts/src/password.rs|concurrency\.max\(1\)=>Semaphore::MAX_PERMITS|booking-accounts|lib|password::tests::at_most_the_concurrency_hashes_at_once"
   "plan|crates/booking-accounts/src/domain.rs|current < i64::from\(limit\)=>true|booking-accounts|limits|token_and_workspace_limits_hold_under_concurrency"
   "ready-deadline|crates/booking-server/src/health.rs|self\.deadline=>Duration::from_secs(3600)|booking-server|health|readyz_reports_a_silent_database_within_its_deadline"
+  "availability-days|crates/availability/src/lib.rs|= 62;=>= 63;|availability|dst|queries_out_of_bounds_are_refused"
+  "availability-staff|crates/availability/src/lib.rs|= 1_000;=>= 1_001;|availability|dst|too_many_staff_are_refused"
+  "services|crates/booking-scheduling/src/domain.rs|= 200;=>= i64::MAX;|booking-scheduling|limits|services_are_capped_per_business"
+  "staff|crates/booking-scheduling/src/domain.rs|= 100;=>= i64::MAX;|booking-scheduling|limits|staff_are_capped_per_business"
+  "exceptions|crates/booking-scheduling/src/domain.rs|= 1_000;=>= i64::MAX;|booking-scheduling|limits|exceptions_are_capped_per_business"
+  "weekly-hours|crates/booking-scheduling/src/domain.rs|= 50;=>= usize::MAX;|booking-scheduling|lib|domain::tests::weekly_overlaps_are_refused_touching_is_not"
+  "availability-read-days|crates/booking-scheduling/src/domain.rs|= 31;=>= u32::MAX;|booking-scheduling|onboarding|a_business_is_set_up_and_offers_slots_across_a_dst_change"
+  "slots|crates/booking-scheduling/src/domain.rs|= 5_000;=>= usize::MAX;|booking-scheduling|limits|an_availability_read_returns_at_most_its_cap_and_says_so"
+  "booking-list|crates/booking-scheduling/src/domain.rs|= 500;=>= i64::MAX;|booking-scheduling|limits|a_booking_list_returns_at_most_its_cap"
 )
 
 # Every marker in the source has exactly one mutation, and every mutation a marker.
