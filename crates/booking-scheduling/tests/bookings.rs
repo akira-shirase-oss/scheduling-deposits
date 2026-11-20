@@ -272,11 +272,20 @@ async fn cancelling_frees_the_slot_and_holds_are_idempotent() {
         Some("slot_unavailable")
     );
     assert_eq!(
-        kit.hold(&t, t.staff[0], &ahead(-1, "12:00").1, "k5")
+        kit.hold(&t, t.staff[0], &ahead(0, "00:00").1, "k5")
             .await
             .code(),
         Some("slot_unavailable")
     );
+    // Further than a day back, or a year ahead: refused before any database work.
+    for (days, key) in [(-2, "k6"), (367, "k7")] {
+        assert_eq!(
+            kit.hold(&t, t.staff[0], &ahead(days, "12:00").1, key)
+                .await
+                .code(),
+            Some("invalid_start")
+        );
+    }
     kit.db.cleanup().await;
 }
 

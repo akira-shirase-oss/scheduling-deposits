@@ -1,6 +1,8 @@
 //! Storage. Every query names the business (the workspace id) in its key; writes that are
 //! bounded lock the business row first and count in the same transaction.
 
+use std::collections::HashMap;
+
 use availability::{Busy, Exception, ExceptionKind, Minutes, WeeklySpan};
 use jiff::Timestamp;
 use jiff::civil::Date;
@@ -613,11 +615,15 @@ async fn begin(
 
 #[expect(
     clippy::too_many_lines,
+    clippy::too_many_arguments,
     reason = "one snapshot transaction, read top to bottom"
 )]
 /// Loads the inputs for `service` on the dates `from..from + days` (local), for `only` one
 /// staff member or every active one who performs it. `with_busy: false` leaves out the
 /// bookings (the hold path checks the hours here and leaves overlap to the constraint).
+///
+/// Refuses, before it loads hours, exceptions or bookings, a read whose grid (staff × days
+/// × grid points a day) is over `max_cells`.
 pub async fn inputs(
     db: &PgPool,
     business: Uuid,
@@ -626,6 +632,7 @@ pub async fn inputs(
     from: Date,
     days: u32,
     with_busy: bool,
+    max_cells: u64,
 ) -> Result<Inputs> {
     let mut tx = begin(db).await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -663,6 +670,13 @@ pub async fn inputs(
     .bind(only)
     .fetch_all(&mut *tx)
     .await?;
+    let cells = availability::cells(ids.len(), days, business_row.settings.slot_step_minutes);
+    if cells > max_cells {
+        return Err(SchedulingError::Invalid(
+            "too_much_work",
+            "narrow the read: fewer days or one staff member",
+        ));
+    }
     let hours = sqlx::query(
         "SELECT staff_id, weekday, start_minute, end_minute FROM weekly_hours
           WHERE business_id = $1 AND staff_id = ANY($2)",
@@ -678,53 +692,61 @@ pub async fn inputs(
         .yesterday()
         .map_err(|_| SchedulingError::Invalid("invalid_date", "the range is out of bounds"))?;
     let rules = exception_rules(&mut *tx, business, Some(day_before), Some(last)).await?;
-    let mut busy: Vec<(Uuid, Busy)> = Vec::new();
+    let mut busy: HashMap<Uuid, Vec<Busy>> = HashMap::new();
     if with_busy {
-        // Wider than any offset: a booking outside this cannot touch a slot of these dates.
+        // Grouped per staff member in SQL, in order. Wider than any offset: a booking
+        // outside this cannot touch a slot of these dates.
         let rows = sqlx::query(
-            "SELECT staff_id, extract(epoch FROM lower(blocked))::bigint AS f, extract(epoch FROM upper(blocked))::bigint AS u
+            "SELECT staff_id,
+                    array_agg(extract(epoch FROM lower(blocked))::bigint ORDER BY lower(blocked)) AS f,
+                    array_agg(extract(epoch FROM upper(blocked))::bigint ORDER BY lower(blocked)) AS u
                FROM bookings
               WHERE business_id = $1 AND staff_id = ANY($2)
                 AND status IN ('held', 'confirmed')
                 AND (status = 'confirmed' OR hold_expires_at > now())
-                AND blocked && tstzrange(($3::date - 2)::timestamp AT TIME ZONE 'UTC', ($4::date + 3)::timestamp AT TIME ZONE 'UTC')",
+                AND blocked && tstzrange(($3::date - 2)::timestamp AT TIME ZONE 'UTC', ($4::date + 3)::timestamp AT TIME ZONE 'UTC')
+              GROUP BY staff_id",
         )
         .bind(business).bind(&ids).bind(from.to_string()).bind(last.to_string())
         .fetch_all(&mut *tx)
         .await?;
         for r in rows {
-            busy.push((
-                r.get("staff_id"),
-                Busy {
-                    from: timestamp(r.get("f"))?,
-                    until: timestamp(r.get("u"))?,
-                },
-            ));
+            let (f, u): (Vec<i64>, Vec<i64>) = (r.get("f"), r.get("u"));
+            let ranges = f
+                .into_iter()
+                .zip(u)
+                .map(|(f, u)| {
+                    Ok(Busy {
+                        from: timestamp(f)?,
+                        until: timestamp(u)?,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            busy.insert(r.get("staff_id"), ranges);
         }
     }
     tx.commit().await?;
+    let mut weekly: HashMap<Uuid, Vec<WeeklySpan>> = HashMap::new();
+    for h in &hours {
+        let span = i8::try_from(h.get::<i16, _>("weekday"))
+            .ok()
+            .zip(Minutes::new(
+                small(h.get("start_minute")),
+                small(h.get("end_minute")),
+            ));
+        if let Some((weekday, span)) = span {
+            weekly
+                .entry(h.get("staff_id"))
+                .or_default()
+                .push(WeeklySpan { weekday, span });
+        }
+    }
     let staff = ids
         .iter()
         .map(|&id| availability::Staff {
             id,
-            weekly: hours
-                .iter()
-                .filter(|h| h.get::<Uuid, _>("staff_id") == id)
-                .filter_map(|h| {
-                    Some(WeeklySpan {
-                        weekday: i8::try_from(h.get::<i16, _>("weekday")).ok()?,
-                        span: Minutes::new(
-                            small(h.get("start_minute")),
-                            small(h.get("end_minute")),
-                        )?,
-                    })
-                })
-                .collect(),
-            busy: busy
-                .iter()
-                .filter(|(s, _)| *s == id)
-                .map(|(_, b)| *b)
-                .collect(),
+            weekly: weekly.remove(&id).unwrap_or_default(),
+            busy: busy.remove(&id).unwrap_or_default(),
         })
         .collect();
     let exceptions = rules
@@ -837,17 +859,59 @@ pub async fn bookings(
 pub async fn hold(
     db: &PgPool,
     business: Uuid,
+    principal: Uuid,
     hold: &Hold,
     hold_minutes: u16,
+    open_holds: u32,
 ) -> Result<(BookingRow, bool)> {
     let mut tx = begin(db).await?;
+    // A retry of a key already used is answered below, never refused by a cap.
+    let replay: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM bookings WHERE business_id = $1 AND idempotency_key = $2",
+    )
+    .bind(business)
+    .bind(&hold.idempotency_key)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if replay.is_none() {
+        // The principal's open holds, counted under a lock on the principal, so concurrent
+        // holds cannot pass the cap together.
+        sqlx::query(
+            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))",
+        )
+        .bind(business)
+        .bind(principal)
+        .execute(&mut *tx)
+        .await?;
+        let open: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM bookings
+              WHERE business_id = $1 AND held_by = $2 AND status = 'held' AND hold_expires_at > now()",
+        )
+        .bind(business)
+        .bind(principal)
+        .fetch_one(&mut *tx)
+        .await?;
+        // LIMIT(open-holds)
+        if open >= i64::from(open_holds) {
+            return Err(SchedulingError::Limit("open_holds"));
+        }
+        // One staff member's holds are decided one at a time: the exclusion check then
+        // meets only committed rows and answers 409, never a wait that ends in a deadlock
+        // or a lock timeout (503).
+        sqlx::query("SELECT 1 FROM staff WHERE business_id = $1 AND id = $2 FOR UPDATE")
+            .bind(business)
+            .bind(hold.staff_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    }
     let id = Uuid::now_v7();
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO bookings (business_id, id, staff_id, service_id, status, starts_at, ends_at,
                                buffer_before_minutes, buffer_after_minutes, blocked, hold_expires_at,
-                               customer_name, customer_email, idempotency_key, created_at, updated_at)
+                               customer_name, customer_email, idempotency_key, created_at, updated_at,
+                               held_by)
          VALUES ($1, $2, $3, $4, 'held', to_timestamp($5), to_timestamp($5), 0, 0, 'empty',
-                 now() + make_interval(mins => $6), $7, $8, $9, now(), now())
+                 now() + make_interval(mins => $6), $7, $8, $9, now(), now(), $10)
          ON CONFLICT (business_id, idempotency_key) DO NOTHING
          RETURNING id",
     )
@@ -860,6 +924,7 @@ pub async fn hold(
     .bind(&hold.customer_name)
     .bind(&hold.customer_email)
     .bind(&hold.idempotency_key)
+    .bind(principal)
     .fetch_optional(&mut *tx)
     .await?;
     let (id, created) = if let Some(id) = inserted {

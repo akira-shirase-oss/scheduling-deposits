@@ -10,6 +10,7 @@ use std::collections::BTreeSet;
 
 use availability::{
     Busy, Exception, ExceptionKind, Minutes, Query, STEPS, Service, Staff, WeeklySpan, slots,
+    slots_after,
 };
 use jiff::Timestamp;
 use jiff::civil::{Date, date};
@@ -269,5 +270,35 @@ proptest! {
         reversed.reverse();
         let twice = slots(&tz, &reversed, &c.exceptions, c.service, &c.query).unwrap();
         prop_assert_eq!(once, twice);
+    }
+
+    /// A page is the full answer's slots after the cursor, cut at the limit, and paging
+    /// through by the last start of each page (cut back to a whole instant) visits every slot.
+    #[test]
+    fn pages_are_cuts_of_the_whole_answer(c in case(), limit in 1usize..12, cut in 0usize..40) {
+        let tz = TimeZone::get(c.zone).unwrap();
+        let all = slots(&tz, &c.staff, &c.exceptions, c.service, &c.query).unwrap();
+        let after = all.get(cut).map(|s| s.start);
+        let page = slots_after(&tz, &c.staff, &c.exceptions, c.service, &c.query, after, limit).unwrap();
+        let expected: Vec<_> = all.iter().filter(|s| after.is_none_or(|a| s.start > a)).take(limit).copied().collect();
+        prop_assert_eq!(&page, &expected);
+
+        let mut seen = Vec::new();
+        let mut cursor = None;
+        loop {
+            let mut page = slots_after(&tz, &c.staff, &c.exceptions, c.service, &c.query, cursor, limit.max(3) + 1).unwrap();
+            if page.len() <= limit.max(3) {
+                seen.extend(page);
+                break;
+            }
+            page.truncate(limit.max(3));
+            let last = page.last().unwrap().start;
+            let next = page.iter().filter(|s| s.start < last).count();
+            let whole = if next == 0 { page.len() } else { next };
+            let keep = &page[..whole];
+            cursor = Some(keep.last().unwrap().start);
+            seen.extend_from_slice(keep);
+        }
+        prop_assert_eq!(seen, all);
     }
 }

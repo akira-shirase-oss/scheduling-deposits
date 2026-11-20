@@ -57,12 +57,31 @@ impl Answer {
     }
 }
 
+/// Rate and hold caps out of the way: every other test is about something else.
+pub fn generous() -> booking_scheduling::Limits {
+    let unlimited = booking_http::budget::Rate::new(1_000_000, std::time::Duration::from_micros(1));
+    booking_scheduling::Limits {
+        read_rate: unlimited,
+        hold_rate: unlimited,
+        open_holds: 1_000_000,
+        ..booking_scheduling::Limits::default()
+    }
+}
+
 impl Kit {
     pub async fn new() -> Self {
         Self::with(|_| {}).await
     }
 
     pub async fn with(tune: impl FnOnce(&mut Settings)) -> Self {
+        Self::bounded(tune, generous()).await
+    }
+
+    /// With these scheduling limits (the limit tests' subject).
+    pub async fn bounded(
+        tune: impl FnOnce(&mut Settings),
+        limits: booking_scheduling::Limits,
+    ) -> Self {
         let db = TestDb::new().await;
         let sink = SmtpSink::start("127.0.0.1:0", None).await.unwrap();
         let mut settings = Settings {
@@ -78,9 +97,10 @@ impl Kit {
         )
         .await
         .unwrap();
-        let product = booking_scheduling::router(booking_scheduling::Scheduling::new(
+        let product = booking_scheduling::router(booking_scheduling::Scheduling::with_limits(
             accounts.clone(),
             db.pool.clone(),
+            limits,
         ));
         let app = Router::new().nest(
             "/v1",

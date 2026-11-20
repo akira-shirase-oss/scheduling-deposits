@@ -19,6 +19,10 @@ pub const MAX_WEEKLY_RANGES: usize = 50;
 pub const MAX_READ_DAYS: u32 = 31;
 /// Slots one availability read returns; the rest is reported as truncated. LIMIT(slots)
 pub const MAX_SLOTS: usize = 5_000;
+/// A hold starts at most this long before now (clock skew; the hours check refuses the past).
+pub const HOLD_START_PAST_SECONDS: i64 = 86_400;
+/// A hold starts at most this long after now, before any database work.
+pub const HOLD_START_AHEAD_SECONDS: i64 = 366 * 86_400;
 /// Bookings one list returns. LIMIT(booking-list)
 pub const MAX_BOOKINGS_LISTED: i64 = 500;
 /// Dates one exception may cover (inclusive span, in days).
@@ -469,11 +473,19 @@ pub fn idempotency_key_shaped(raw: &str) -> bool {
 impl HoldInput {
     /// # Errors
     /// The first rule broken.
-    pub fn validate(self) -> Result<Hold, Invalid> {
+    pub fn validate(self, now: jiff::Timestamp) -> Result<Hold, Invalid> {
         let starts_at: jiff::Timestamp = (self.starts_at.len() <= 40)
             .then(|| self.starts_at.parse().ok())
             .flatten()
             .ok_or(("invalid_start", "starts_at is an RFC 3339 instant"))?;
+        let offset = starts_at.as_second().saturating_sub(now.as_second());
+        // LIMIT(hold-start-window)
+        if !(-HOLD_START_PAST_SECONDS..=HOLD_START_AHEAD_SECONDS).contains(&offset) {
+            return Err((
+                "invalid_start",
+                "starts_at is within a day before now to 366 days after",
+            ));
+        }
         if starts_at.as_second() % 60 != 0 || starts_at.subsec_nanosecond() != 0 {
             return Err(("invalid_start", "starts_at is a whole minute"));
         }
@@ -504,6 +516,41 @@ impl HoldInput {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_hold_starts_within_a_day_before_now_to_366_days_after() {
+        let now: jiff::Timestamp = "2027-06-01T10:00:00Z".parse().unwrap();
+        let at = |starts_at: &str| {
+            HoldInput {
+                service_id: uuid::Uuid::nil(),
+                staff_id: uuid::Uuid::nil(),
+                starts_at: starts_at.into(),
+                customer_name: "C".into(),
+                customer_email: None,
+                idempotency_key: "k".into(),
+            }
+            .validate(now)
+            .map(|h| h.starts_at.to_string())
+            .map_err(|e| e.0)
+        };
+        assert_eq!(
+            at("2027-05-31T10:00:00Z"),
+            Ok("2027-05-31T10:00:00Z".into())
+        );
+        assert_eq!(
+            at("2028-06-01T10:00:00Z"),
+            Ok("2028-06-01T10:00:00Z".into())
+        );
+        for out in [
+            "2027-05-31T09:59:00Z",
+            "2028-06-01T10:01:00Z",
+            "0001-01-01T00:00:00Z",
+            "9999-12-31T23:59:00Z",
+            "-000001-01-01T00:00:00Z",
+        ] {
+            assert_eq!(at(out), Err("invalid_start"), "{out}");
+        }
+    }
+
     use super::*;
     use proptest::prelude::*;
 
@@ -601,7 +648,7 @@ mod tests {
             let _ = HoldInput {
                 service_id: uuid::Uuid::nil(), staff_id: uuid::Uuid::nil(), starts_at: s.clone(),
                 customer_name: t.clone(), customer_email: Some(s.clone()), idempotency_key: t,
-            }.validate();
+            }.validate(jiff::Timestamp::UNIX_EPOCH);
         }
 
         #[test]

@@ -184,6 +184,35 @@ pub fn slots(
     service: Service,
     query: &Query,
 ) -> Result<Vec<Slot>, Error> {
+    slots_after(tz, staff, exceptions, service, query, None, usize::MAX)
+}
+
+/// Grid points a read walks: `staff × days × points a day`. A caller budgets work by it
+/// before it calls [`slots_after`].
+#[must_use]
+pub fn cells(staff: usize, days: u32, step_minutes: u16) -> u64 {
+    let per_day = 1440 / u64::from(step_minutes.max(1));
+    u64::try_from(staff)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(u64::from(days))
+        .saturating_mul(per_day)
+}
+
+/// The first `limit` slots of [`slots`] that start after `after`, in the same order (start,
+/// then staff id). The walk stops at `limit`; it never builds the whole answer.
+///
+/// # Errors
+///
+/// As [`slots`].
+pub fn slots_after(
+    tz: &TimeZone,
+    staff: &[Staff],
+    exceptions: &[Exception],
+    service: Service,
+    query: &Query,
+    after: Option<Timestamp>,
+    limit: usize,
+) -> Result<Vec<Slot>, Error> {
     if query.days == 0 || query.days > MAX_DAYS {
         return Err(Error::Range);
     }
@@ -203,7 +232,7 @@ pub fn slots(
     let window = Window::new(tz, query)?;
     let duration = i64::from(service.duration_minutes) * 60;
     let before = i64::from(service.buffer_before_minutes) * 60;
-    let after = i64::from(service.buffer_after_minutes) * 60;
+    let after_buffer = i64::from(service.buffer_after_minutes) * 60;
     let earliest = query
         .now
         .as_second()
@@ -213,36 +242,54 @@ pub fn slots(
         .as_second()
         .saturating_add(i64::from(query.max_advance_days) * DAY);
 
+    let mut members: Vec<(Uuid, Ranges, Ranges)> = staff
+        .iter()
+        .map(|member| {
+            let hours = window.day_hours(member, exceptions);
+            let busy = merged(
+                member
+                    .busy
+                    .iter()
+                    .map(|b| (b.from.as_second(), b.until.as_second()))
+                    .filter(|(a, b)| a < b)
+                    .collect(),
+            );
+            (member.id, window.working(&hours), busy)
+        })
+        .collect();
+    members.sort_unstable_by_key(|m| m.0);
+    // One grid for every member, walked in start order: the answer comes out sorted, and
+    // generation stops at `limit`.
+    let grid = window.grid(query.step_minutes);
+    let skip = after.map_or(0, |a| grid.partition_point(|&g| g <= a.as_second()));
     let mut out = Vec::new();
-    for member in staff {
-        let hours = window.day_hours(member, exceptions);
-        let working = window.working(&hours);
-        let busy = merged(
-            member
-                .busy
-                .iter()
-                .map(|b| (b.from.as_second(), b.until.as_second()))
-                .filter(|(a, b)| a < b)
-                .collect(),
-        );
-        for start in window.grid(query.step_minutes) {
-            if start < earliest || start > latest {
+    for &start in &grid[skip..] {
+        if start > latest {
+            break;
+        }
+        if start < earliest {
+            continue;
+        }
+        let end = start + duration;
+        for (id, working, busy) in &members {
+            if !inside(working, start, end) || overlaps(busy, start - before, end + after_buffer) {
                 continue;
             }
-            let end = start + duration;
-            if !inside(&working, start, end) || overlaps(&busy, start - before, end + after) {
-                continue;
+            if out.len() == limit {
+                return Ok(out);
             }
             out.push(Slot {
                 start: ts(start)?,
                 end: ts(end)?,
-                staff: member.id,
+                staff: *id,
             });
         }
     }
-    out.sort_unstable();
     Ok(out)
 }
+
+/// Merged `[from, until)` ranges in seconds.
+type Ranges = Vec<(i64, i64)>;
 
 /// The civil days of a query and the offset pieces of the instants around them.
 struct Window {

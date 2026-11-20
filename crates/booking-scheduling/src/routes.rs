@@ -73,6 +73,74 @@ async fn authorize(
     )
 }
 
+/// As [`authorize`], with the principal's id (the member or the token) for its budgets.
+async fn authorize_as(
+    s: &Scheduling,
+    headers: &HeaderMap,
+    workspace: Uuid,
+    action: Action,
+) -> Result<(Uuid, Uuid)> {
+    let access = timed(Stage::Auth, s.accounts.access(headers, workspace, action)).await?;
+    let principal = match access.via {
+        booking_accounts::Via::Member { user, .. } => user,
+        booking_accounts::Via::Token { token } => token,
+    };
+    Ok((access.workspace, principal))
+}
+
+fn rate_limited(budget: &booking_http::budget::PerKey<Uuid>, principal: Uuid) -> Result<()> {
+    budget.take(principal).map_err(|retry| {
+        SchedulingError::Access(booking_accounts::error::AccountsError::RateLimited(
+            retry.secs(),
+        ))
+    })
+}
+
+/// One slot of an answer, serialized without an intermediate value.
+#[derive(serde::Serialize)]
+struct SlotOut {
+    #[serde(serialize_with = "display")]
+    start: jiff::Timestamp,
+    #[serde(serialize_with = "display")]
+    end: jiff::Timestamp,
+    staff_id: Uuid,
+}
+
+fn display<S: serde::Serializer>(
+    t: &jiff::Timestamp,
+    s: S,
+) -> std::result::Result<S::Ok, S::Error> {
+    s.collect_str(t)
+}
+
+#[derive(serde::Serialize)]
+struct AvailabilityOut {
+    service_id: Uuid,
+    time_zone: String,
+    from: String,
+    days: u32,
+    as_of: String,
+    slots: Vec<SlotOut>,
+    truncated: bool,
+    next_after: Option<String>,
+}
+
+/// Cuts an answer of up to `MAX_SLOTS + 1` slots to at most `MAX_SLOTS`, back to a whole
+/// start instant, so the next page (`after` = the last start kept) misses no staff member.
+fn page(mut slots: Vec<availability::Slot>) -> (Vec<availability::Slot>, Option<jiff::Timestamp>) {
+    if slots.len() <= domain::MAX_SLOTS {
+        return (slots, None);
+    }
+    let cut = slots[domain::MAX_SLOTS].start;
+    slots.truncate(domain::MAX_SLOTS);
+    let whole = slots.partition_point(|s| s.start < cut);
+    if whole > 0 {
+        slots.truncate(whole);
+    }
+    let next = slots.last().map(|s| s.start);
+    (slots, next)
+}
+
 fn invalid((code, message): domain::Invalid) -> SchedulingError {
     SchedulingError::Invalid(code, message)
 }
@@ -339,6 +407,8 @@ struct AvailabilityQuery {
     from: String,
     #[serde(default = "one")]
     days: u32,
+    /// The cursor: only slots that start after this instant (the last page's `next_after`).
+    after: Option<String>,
 }
 
 const fn one() -> u32 {
@@ -379,44 +449,79 @@ async fn availability(
     headers: HeaderMap,
     Path(w): Path<Uuid>,
     Query(q): Query<AvailabilityQuery>,
-) -> Result<Json<serde_json::Value>> {
-    let b = authorize(&s, &headers, w, Action::Read).await?;
+) -> Result<Json<AvailabilityOut>> {
+    let (b, principal) = authorize_as(&s, &headers, w, Action::Read).await?;
+    rate_limited(&s.reads, principal)?; // LIMIT(availability-read-rate)
     let from =
         domain::parse_date(&q.from).ok_or(invalid(("invalid_date", "from is YYYY-MM-DD")))?;
     if !(1..=domain::MAX_READ_DAYS).contains(&q.days) {
         return Err(invalid(("invalid_days", "days is 1 to 31")));
     }
+    let after = match &q.after {
+        None => None,
+        Some(raw) => Some(
+            (raw.len() <= 40)
+                .then(|| raw.parse::<jiff::Timestamp>().ok())
+                .flatten()
+                .ok_or(invalid(("invalid_after", "after is an RFC 3339 instant")))?,
+        ),
+    };
+    let max_cells = s.limits.max_cells; // LIMIT(availability-cells)
     let inputs = timed(
         Stage::Db,
-        store::inputs(&s.db, b, q.service, q.staff, from, q.days, true),
+        store::inputs(&s.db, b, q.service, q.staff, from, q.days, true, max_cells),
     )
     .await?;
-    let computing = std::time::Instant::now();
     let tz = zone(&inputs.business.settings.time_zone)?;
-    let mut slots = availability::slots(
-        &tz,
-        &inputs.staff,
-        &inputs.exceptions,
-        service_of(&inputs),
-        &query_of(&inputs, from, q.days),
+    // The engine is CPU work: off the async workers, a bounded number at once.
+    let permit = timed(
+        Stage::ComputeWait,
+        tokio::time::timeout(s.limits.compute_wait, s.compute.clone().acquire_owned()),
     )
-    .map_err(|e| engine_error(&e))?;
-    let truncated = slots.len() > domain::MAX_SLOTS;
-    slots.truncate(domain::MAX_SLOTS);
-    let slots: Vec<_> = slots
-        .iter()
-        .map(|slot| json!({ "start": slot.start.to_string(), "end": slot.end.to_string(), "staff_id": slot.staff }))
-        .collect();
-    booking_http::timing::global().record(Stage::Compute, computing.elapsed());
-    Ok(Json(json!({
-        "service_id": q.service,
-        "time_zone": inputs.business.settings.time_zone,
-        "from": from.to_string(),
-        "days": q.days,
-        "as_of": inputs.now.to_string(),
-        "slots": slots,
-        "truncated": truncated,
-    })))
+    .await
+    .map_err(|_| SchedulingError::Unavailable)?
+    .map_err(|_| SchedulingError::Unavailable)?;
+    let days = q.days;
+    let service_id = q.service;
+    let answer = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let started = std::time::Instant::now();
+        let slots = availability::slots_after(
+            &tz,
+            &inputs.staff,
+            &inputs.exceptions,
+            service_of(&inputs),
+            &query_of(&inputs, from, days),
+            after,
+            domain::MAX_SLOTS + 1,
+        )
+        .map_err(|e| engine_error(&e));
+        let out = slots.map(|slots| {
+            let (slots, next) = page(slots);
+            AvailabilityOut {
+                service_id,
+                time_zone: inputs.business.settings.time_zone.clone(),
+                from: from.to_string(),
+                days,
+                as_of: inputs.now.to_string(),
+                truncated: next.is_some(),
+                next_after: next.map(|t| t.to_string()),
+                slots: slots
+                    .into_iter()
+                    .map(|slot| SlotOut {
+                        start: slot.start,
+                        end: slot.end,
+                        staff_id: slot.staff,
+                    })
+                    .collect(),
+            }
+        });
+        booking_http::timing::global().record(Stage::Compute, started.elapsed());
+        out
+    })
+    .await
+    .map_err(|e| SchedulingError::Internal(anyhow::anyhow!("availability task: {e}")))??;
+    Ok(Json(answer))
 }
 
 async fn place_hold(
@@ -425,8 +530,9 @@ async fn place_hold(
     Path(w): Path<Uuid>,
     Json(body): Json<HoldInput>,
 ) -> Result<Response> {
-    let b = authorize(&s, &headers, w, Action::Book).await?;
-    let hold = body.validate().map_err(invalid)?;
+    let (b, principal) = authorize_as(&s, &headers, w, Action::Book).await?;
+    rate_limited(&s.holds, principal)?; // LIMIT(hold-rate)
+    let hold = body.validate(jiff::Timestamp::now()).map_err(invalid)?;
     let tz = zone(
         &store::business(&s.db, b)
             .await?
@@ -445,6 +551,7 @@ async fn place_hold(
         day,
         1,
         false,
+        u64::MAX,
     )
     .await?;
     let slots = availability::slots(
@@ -461,8 +568,15 @@ async fn place_hold(
     {
         return Err(SchedulingError::SlotUnavailable);
     }
-    let (row, created) =
-        store::hold(&s.db, b, &hold, inputs.business.settings.hold_minutes).await?;
+    let (row, created) = store::hold(
+        &s.db,
+        b,
+        principal,
+        &hold,
+        inputs.business.settings.hold_minutes,
+        s.limits.open_holds,
+    )
+    .await?;
     Ok(created_or_ok(created, json!(row)))
 }
 

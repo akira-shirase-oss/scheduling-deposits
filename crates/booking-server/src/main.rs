@@ -138,7 +138,11 @@ async fn run(config: Config) -> Result<Drained, Stop> {
         config.error_rate_permille,
         config.error_min_requests,
     );
-    let scheduling = booking_scheduling::Scheduling::new(accounts.clone(), pool.clone());
+    let scheduling = booking_scheduling::Scheduling::with_limits(
+        accounts.clone(),
+        pool.clone(),
+        config.scheduling,
+    );
     let router = app(AppState {
         accounts,
         scheduling,
