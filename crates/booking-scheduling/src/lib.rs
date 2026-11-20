@@ -19,7 +19,7 @@ use tokio::sync::Semaphore;
 
 pub use crate::routes::{router, zone};
 
-/// The bounds on what one caller may make the server do (D-017).
+/// The bounds on what one caller may make the server do (D-018).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Limits {
     /// Grid points (staff × days × points a day) one availability read may walk.

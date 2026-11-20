@@ -96,35 +96,6 @@ fn rate_limited(budget: &booking_http::budget::PerKey<Uuid>, principal: Uuid) ->
     })
 }
 
-/// One slot of an answer, serialized without an intermediate value.
-#[derive(serde::Serialize)]
-struct SlotOut {
-    #[serde(serialize_with = "display")]
-    start: jiff::Timestamp,
-    #[serde(serialize_with = "display")]
-    end: jiff::Timestamp,
-    staff_id: Uuid,
-}
-
-fn display<S: serde::Serializer>(
-    t: &jiff::Timestamp,
-    s: S,
-) -> std::result::Result<S::Ok, S::Error> {
-    s.collect_str(t)
-}
-
-#[derive(serde::Serialize)]
-struct AvailabilityOut {
-    service_id: Uuid,
-    time_zone: String,
-    from: String,
-    days: u32,
-    as_of: String,
-    slots: Vec<SlotOut>,
-    truncated: bool,
-    next_after: Option<String>,
-}
-
 /// Cuts an answer of up to `MAX_SLOTS + 1` slots to at most `MAX_SLOTS`, back to a whole
 /// start instant, so the next page (`after` = the last start kept) misses no staff member.
 fn page(mut slots: Vec<availability::Slot>) -> (Vec<availability::Slot>, Option<jiff::Timestamp>) {
@@ -449,7 +420,7 @@ async fn availability(
     headers: HeaderMap,
     Path(w): Path<Uuid>,
     Query(q): Query<AvailabilityQuery>,
-) -> Result<Json<AvailabilityOut>> {
+) -> Result<Json<serde_json::Value>> {
     let (b, principal) = authorize_as(&s, &headers, w, Action::Read).await?;
     rate_limited(&s.reads, principal)?; // LIMIT(availability-read-rate)
     let from =
@@ -498,23 +469,39 @@ async fn availability(
         .map_err(|e| engine_error(&e));
         let out = slots.map(|slots| {
             let (slots, next) = page(slots);
-            AvailabilityOut {
-                service_id,
-                time_zone: inputs.business.settings.time_zone.clone(),
-                from: from.to_string(),
-                days,
-                as_of: inputs.now.to_string(),
-                truncated: next.is_some(),
-                next_after: next.map(|t| t.to_string()),
-                slots: slots
-                    .into_iter()
-                    .map(|slot| SlotOut {
-                        start: slot.start,
-                        end: slot.end,
-                        staff_id: slot.staff,
-                    })
-                    .collect(),
+            // Grouped by start, staff by index (D-017): one line per bookable time.
+            let staff_ids: Vec<Uuid> = inputs.staff.iter().map(|m| m.id).collect();
+            let index: std::collections::HashMap<Uuid, usize> = staff_ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| (*id, i))
+                .collect();
+            let mut starts: Vec<(jiff::Timestamp, Vec<usize>)> = Vec::new();
+            for slot in &slots {
+                let Some(&pos) = index.get(&slot.staff) else {
+                    continue;
+                };
+                match starts.last_mut() {
+                    Some((at, staff)) if *at == slot.start => staff.push(pos),
+                    _ => starts.push((slot.start, vec![pos])),
+                }
             }
+            let starts: Vec<_> = starts
+                .into_iter()
+                .map(|(at, staff)| json!({ "at": at.to_string(), "staff": staff }))
+                .collect();
+            json!({
+                "service_id": service_id,
+                "time_zone": inputs.business.settings.time_zone,
+                "from": from.to_string(),
+                "days": days,
+                "as_of": inputs.now.to_string(),
+                "duration_minutes": inputs.service.duration_minutes,
+                "staff_ids": staff_ids,
+                "starts": starts,
+                "truncated": next.is_some(),
+                "next_after": next.map(|t| t.to_string()),
+            })
         });
         booking_http::timing::global().record(Stage::Compute, started.elapsed());
         out

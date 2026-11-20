@@ -174,7 +174,21 @@ a minute old. `touches::fresh_credentials_are_read_not_rewritten_and_stale_ones_
 compares the row's `xmin` across reads. It failed before the change, and both misses are
 kept in the PR.
 
-## D-017 — What one caller may make the server do
+## D-017 — An availability answer lists each time once
+
+The second full CI run of availability-read (after D-016) still missed: 16.4% shed, with
+p95 332 ms. That run received 124 GB, about 124 KB per answer. Each (start, end, staff)
+was its own ~105-byte object, and the seed has 10 staff free around the clock.
+
+The answer now lists each start once, with the indexes of the staff free at that time
+(`starts: [{at, staff: [i…]}]`, `staff_ids`, `duration_minutes`). The end is the start
+plus the duration.
+
+- The 5,000 cap still counts (time, staff) pairs.
+- The scenario's thresholds are unchanged. Its empty-answer check now looks for `"at"`.
+- The `limits` test proves the grouping.
+
+## D-018 — What one caller may make the server do
 
 A read's cost is staff × days × grid points a day, so it is computed from the request
 and the business before anything is loaded, and refused past a budget (default 300,000:
@@ -198,7 +212,7 @@ The rates live in memory: a restart resets them, and they are per process (D-003
 server). The load scenarios drive everything through one session or token, so
 `scripts/load.sh` raises these per-principal budgets for its run and says so.
 
-## D-018 — Where the availability-read median went
+## D-019 — Where the availability-read median went
 
 The server now records request, authorization, pool-wait, database and compute times
 (`booking_http::timing`) and reports them when it drains; `scripts/load.sh` stores them
@@ -206,15 +220,16 @@ with the CPU seconds in the result. On the CI runner, with D-016 in place and k6
 `preAllocatedVUs` raised to `maxVUs`, the full availability-read run measured a client
 median of 2.0 ms against a server request median of 2.2 ms (pool wait p99 1.5 ms). The
 earlier 315 ms median was therefore spent before requests reached a handler: k6 growing
-its VU pool mid-run. The remaining 1.6% failures were requests that never reached the
+its VU pool mid-run. The remaining 1.6% failures (with D-017's smaller answers) were requests that never reached the
 server, because 1,000 keep-alive VUs exceeded the server's 512-connection cap. The
 scenarios now preallocate 500 VUs (below the cap, with the server at its production
 defaults); every threshold is unchanged.
 
-## D-019 — Blockers carried into M3 (before any public booking page)
+## D-020 — Blockers carried into M3 (before any public booking page)
 
 - Confirming a hold is today a plain member action. M3 makes payment the only way a
   booking becomes confirmed (END_GOAL invariant 2); until then this path is fail-open
   against that invariant and must be removed or restricted to the payment flow.
 - Idempotency keys are unique per business, not per caller. Before a public page, keys
   are scoped to the caller that made them.
+||||||| facea9a

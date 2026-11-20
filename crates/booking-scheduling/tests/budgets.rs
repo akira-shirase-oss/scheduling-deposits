@@ -1,4 +1,4 @@
-//! What one caller may make the server do (D-017): the availability work budget and its
+//! What one caller may make the server do (D-018): the availability work budget and its
 //! cursor, and the per-principal read rate, hold rate and open-hold cap. Each test is the
 //! proof of one `LIMIT(...)` line (`scripts/prove-limits.sh`).
 #![allow(clippy::unwrap_used, reason = "tests")]
@@ -84,14 +84,19 @@ async fn paging_with_after_visits_every_slot_once_in_order() {
         };
         let a = kit.get(&t.session, &path).await;
         assert_eq!(a.status, StatusCode::OK, "{}", a.body);
-        let slots = a.body["slots"].as_array().unwrap();
-        assert!(slots.len() <= 5_000);
-        for s in slots {
-            seen.push((
-                s["start"].as_str().unwrap().to_owned(),
-                s["staff_id"].as_str().unwrap().to_owned(),
-            ));
+        let ids = a.body["staff_ids"].as_array().unwrap();
+        let starts = a.body["starts"].as_array().unwrap();
+        let mut pairs = 0;
+        for at in starts {
+            for i in at["staff"].as_array().unwrap() {
+                let staff = ids[usize::try_from(i.as_u64().unwrap()).unwrap()]
+                    .as_str()
+                    .unwrap();
+                seen.push((at["at"].as_str().unwrap().to_owned(), staff.to_owned()));
+                pairs += 1;
+            }
         }
+        assert!(pairs <= 5_000);
         pages += 1;
         if a.body["truncated"] == false {
             assert!(a.body["next_after"].is_null());
@@ -99,7 +104,7 @@ async fn paging_with_after_visits_every_slot_once_in_order() {
         }
         let next = a.body["next_after"].as_str().unwrap().to_owned();
         assert_eq!(
-            slots.last().unwrap()["start"],
+            starts.last().unwrap()["at"],
             next.as_str(),
             "a page ends on a whole instant"
         );

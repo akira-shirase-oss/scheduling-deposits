@@ -60,7 +60,7 @@ ctl "$db" bootstrap >/dev/null
 ctl "$db" migrate >/dev/null
 target/release/examples/smtp-sink "127.0.0.1:$sink_port" "$work/mail.log" >"$work/sink.log" 2>&1 &
 pids+=($!)
-# One session and one token drive the whole run: their per-principal budgets (D-017) are
+# One session and one token drive the whole run: their per-principal budgets (D-018) are
 # opened so the run measures the booking path; tests/budgets.rs proves the budgets.
 BOOKING_DATABASE_URL="$(role_url booking_app "$APP_PW" "$db")" BOOKING_LISTEN="127.0.0.1:$port" \
   BOOKING_SMTP_RELAY="127.0.0.1:$sink_port" BOOKING_PUBLIC_URL="$base" BOOKING_COOKIE_SECURE=false \

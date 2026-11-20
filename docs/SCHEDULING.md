@@ -39,22 +39,32 @@ Reads: `GET /business`, `/services`, `/services/{id}`, `/staff` and `/staff/{id}
 
 ## Availability (Read)
 
-`GET /availability?service=&staff=&from=YYYY-MM-DD&days=1..31` answers
-`{service_id, time_zone, from, days, as_of, slots: [{start, end, staff_id}], truncated}`.
-Slots cover the active staff who perform the active service, or the one `staff` given.
-They are sorted by start, then staff, and capped at 5,000 (`truncated: true` past that).
-A truncated answer carries `next_after`, the start of its last slot; asking again with
-`after=<that instant>` returns the slots starting after it, so a client pages through the
-whole range in order (`invalid_after` if it is not an RFC 3339 instant).
+`GET /availability?service=&staff=&from=YYYY-MM-DD&days=1..31` answers:
 
-A read is sized before any work: staff × days × grid points a day over
-`BOOKING_AVAILABILITY_MAX_CELLS` (default 300,000) is refused with 422 `too_much_work`;
-fewer days or one `staff` fits. The engine runs off the async workers, at most
-`BOOKING_COMPUTE_PERMITS` at once, walking one grid in start order and stopping at
-5,001 slots. Each principal (member or token) has a read rate
-(`BOOKING_READ_RATE_PER_SECOND`, 429 `rate_limited` past it) (D-017).
-The inputs are read in one `REPEATABLE READ` snapshot. "Now" is the database clock
-(`as_of`), the same clock that expires holds (D-009).
+```json
+{"service_id": "…", "time_zone": "Europe/London", "from": "2026-06-01", "days": 1,
+ "as_of": "…", "duration_minutes": 30,
+ "staff_ids": ["…", "…"],
+ "starts": [{"at": "2026-06-01T08:00:00Z", "staff": [0, 1]}, …],
+ "truncated": false}
+```
+
+- Each bookable time appears once, with the indexes (into `staff_ids`) of the staff free
+  then. A slot ends `duration_minutes` after its start (D-017).
+- It covers the active staff who perform the active service, or the one `staff` given.
+- Times are sorted. At most 5,000 (time, staff) pairs are returned, with
+  `truncated: true` past that. A truncated answer carries `next_after`, the last time it
+  lists; asking again with `after=<that instant>` returns the times after it, so a client
+  pages through the whole range in order (`invalid_after` if it is not an RFC 3339
+  instant).
+- A read is sized before any work: staff × days × grid points a day over
+  `BOOKING_AVAILABILITY_MAX_CELLS` (default 300,000) is refused with 422 `too_much_work`;
+  fewer days or one `staff` fits. The engine runs off the async workers, at most
+  `BOOKING_COMPUTE_PERMITS` at once, walking one grid in start order and stopping at
+  5,001 pairs. Each principal (member or token) has a read rate
+  (`BOOKING_READ_RATE_PER_SECOND`, 429 `rate_limited` past it) (D-018).
+- The inputs are read in one `REPEATABLE READ` snapshot. "Now" is the database clock
+  (`as_of`), the same clock that expires holds (D-009).
 
 The rules (crate `availability`, D-007):
 
