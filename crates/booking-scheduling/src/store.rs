@@ -853,6 +853,29 @@ pub async fn bookings(
         .collect()
 }
 
+/// Whether a committed, live booking of the staff member already blocks this hold's range.
+async fn slot_taken(
+    tx: &mut sqlx::Transaction<'static, sqlx::Postgres>,
+    business: Uuid,
+    hold: &Hold,
+) -> std::result::Result<bool, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (
+           SELECT 1 FROM bookings b JOIN services s ON s.business_id = b.business_id AND s.id = $3
+            WHERE b.business_id = $1 AND b.staff_id = $2
+              AND (b.status = 'confirmed' OR (b.status = 'held' AND b.hold_expires_at > now()))
+              AND b.blocked && tstzrange(
+                    to_timestamp($4) - make_interval(mins => s.buffer_before_minutes),
+                    to_timestamp($4) + make_interval(mins => s.duration_minutes + s.buffer_after_minutes)))",
+    )
+    .bind(business)
+    .bind(hold.staff_id)
+    .bind(hold.service_id)
+    .bind(hold.starts_at.as_second())
+    .fetch_one(&mut **tx)
+    .await
+}
+
 /// Places a hold. The database computes the blocked range, expires stale holds in the way,
 /// and refuses an overlap (23P01 → [`SchedulingError::SlotTaken`]). A retry with the same
 /// idempotency key returns the first hold (`false`), or a conflict if the request differs.
@@ -874,6 +897,14 @@ pub async fn hold(
     .fetch_optional(&mut *tx)
     .await?;
     if replay.is_none() {
+        // A slot already held or confirmed by a committed booking is answered 409 at once,
+        // without the staff lock: under contention almost every request is such a loser,
+        // and none of them should hold a pool connection waiting for the lock. The insert
+        // below (the exclusion constraint) stays the only arbiter of who wins.
+        let taken = slot_taken(&mut tx, business, hold).await?;
+        if taken {
+            return Err(SchedulingError::SlotTaken);
+        }
         // One staff member's holds are decided one at a time: the exclusion check then
         // meets only committed rows and answers 409, never a wait that ends in a deadlock
         // or a lock timeout (503).
