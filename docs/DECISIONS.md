@@ -154,3 +154,22 @@ Taking the payment is M3.
 The runtime role may insert and update bookings but not delete them. The update trigger
 lets only `status` change, along the allowed transitions. `hold_expires_at` stays after
 confirmation as the record of the hold.
+
+## D-016 — A credential lookup writes only when it must
+
+The first full CI runs of both scenarios (commit b767be2) missed their thresholds.
+
+| Scenario | Failed | p95 |
+|---|---|---|
+| availability-read | 23% (shed) | 369 ms |
+| hold-contention | 0.46% | p99 108 ms |
+
+Both use one credential. Each lookup of the kit was an `UPDATE … SET last_* = CASE …
+ELSE last_* END`, so every request wrote a new version of one row. Those writes
+serialized on that row's lock and a WAL flush. That caps one token or session at the
+disk's commit rate, however idle the rest of the system is.
+
+The lookups now read the row in a CTE and update it only when the timestamp is more than
+a minute old. `touches::fresh_credentials_are_read_not_rewritten_and_stale_ones_are_touched`
+compares the row's `xmin` across reads. It failed before the change, and both misses are
+kept in the PR.

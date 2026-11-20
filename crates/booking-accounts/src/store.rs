@@ -297,12 +297,19 @@ pub async fn session_user(
     idle: Duration,
 ) -> Result<Option<Uuid>, AccountsError> {
     Ok(sqlx::query_scalar(
-        "UPDATE sessions
-            SET last_seen_at = CASE WHEN last_seen_at < now() - interval '60 seconds'
-                                    THEN now() ELSE last_seen_at END
-          WHERE digest = $1 AND expires_at > now()
-            AND last_seen_at > now() - make_interval(secs => $2)
-          RETURNING user_id",
+        // Only a stale row is written (and locked): an UPDATE that keeps the value still
+        // writes a row version, which would serialize every request of one session.
+        "WITH live AS (
+             SELECT user_id FROM sessions
+              WHERE digest = $1 AND expires_at > now()
+                AND last_seen_at > now() - make_interval(secs => $2)
+         ), touched AS (
+             UPDATE sessions SET last_seen_at = now()
+              WHERE digest = $1 AND expires_at > now()
+                AND last_seen_at > now() - make_interval(secs => $2)
+                AND last_seen_at < now() - interval '60 seconds'
+         )
+         SELECT user_id FROM live",
     )
     .bind(&digest[..])
     .bind(secs(idle))
@@ -326,11 +333,15 @@ pub async fn token_workspace(
     digest: [u8; 32],
 ) -> Result<Option<(Uuid, Uuid)>, AccountsError> {
     let row = sqlx::query(
-        "UPDATE api_tokens
-            SET last_used_at = CASE WHEN last_used_at IS NULL OR last_used_at < now() - interval '60 seconds'
-                                    THEN now() ELSE last_used_at END
-          WHERE digest = $1
-          RETURNING id, workspace_id",
+        // Only a stale row is written (and locked), as for sessions.
+        "WITH token AS (
+             SELECT id, workspace_id FROM api_tokens WHERE digest = $1
+         ), touched AS (
+             UPDATE api_tokens SET last_used_at = now()
+              WHERE digest = $1
+                AND (last_used_at IS NULL OR last_used_at < now() - interval '60 seconds')
+         )
+         SELECT id, workspace_id FROM token",
     )
     .bind(&digest[..])
     .fetch_optional(db)
