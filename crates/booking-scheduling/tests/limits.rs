@@ -122,7 +122,24 @@ async fn an_availability_read_returns_at_most_its_cap_and_says_so() {
         )
         .await;
     assert_eq!(a.status, StatusCode::OK, "{}", a.body);
-    assert_eq!(a.body["slots"].as_array().unwrap().len(), 5_000);
+    let pairs: usize = a.body["starts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|s| s["staff"].as_array().unwrap().len())
+        .sum();
+    assert_eq!(pairs, 5_000);
+    // Grouped (D-017): both staff are free at every time, so each time is listed once.
+    assert_eq!(a.body["staff_ids"].as_array().unwrap().len(), 2);
+    assert_eq!(a.body["duration_minutes"], 30);
+    assert_eq!(a.body["starts"].as_array().unwrap().len(), 2_500);
+    assert!(
+        a.body["starts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|s| s["staff"] == json!([0, 1]))
+    );
     assert_eq!(a.body["truncated"], true);
     kit.db.cleanup().await;
 }

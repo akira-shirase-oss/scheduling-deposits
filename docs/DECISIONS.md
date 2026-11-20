@@ -173,3 +173,17 @@ The lookups now read the row in a CTE and update it only when the timestamp is m
 a minute old. `touches::fresh_credentials_are_read_not_rewritten_and_stale_ones_are_touched`
 compares the row's `xmin` across reads. It failed before the change, and both misses are
 kept in the PR.
+
+## D-017 — An availability answer lists each time once
+
+The second full CI run of availability-read (after D-016) still missed: 16.4% shed, with
+p95 332 ms. That run received 124 GB, about 124 KB per answer. Each (start, end, staff)
+was its own ~105-byte object, and the seed has 10 staff free around the clock.
+
+The answer now lists each start once, with the indexes of the staff free at that time
+(`starts: [{at, staff: [i…]}]`, `staff_ids`, `duration_minutes`). The end is the start
+plus the duration.
+
+- The 5,000 cap still counts (time, staff) pairs.
+- The scenario's thresholds are unchanged. Its empty-answer check now looks for `"at"`.
+- The `limits` test proves the grouping.

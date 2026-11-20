@@ -403,9 +403,26 @@ async fn availability(
     .map_err(|e| engine_error(&e))?;
     let truncated = slots.len() > domain::MAX_SLOTS;
     slots.truncate(domain::MAX_SLOTS);
-    let slots: Vec<_> = slots
+    // Grouped by start, staff by index (D-017): one line per bookable time, not per pair.
+    let staff_ids: Vec<Uuid> = inputs.staff.iter().map(|m| m.id).collect();
+    let index: std::collections::HashMap<Uuid, usize> = staff_ids
         .iter()
-        .map(|slot| json!({ "start": slot.start.to_string(), "end": slot.end.to_string(), "staff_id": slot.staff }))
+        .enumerate()
+        .map(|(i, id)| (*id, i))
+        .collect();
+    let mut starts: Vec<(jiff::Timestamp, Vec<usize>)> = Vec::new();
+    for slot in &slots {
+        let Some(&pos) = index.get(&slot.staff) else {
+            continue;
+        };
+        match starts.last_mut() {
+            Some((at, staff)) if *at == slot.start => staff.push(pos),
+            _ => starts.push((slot.start, vec![pos])),
+        }
+    }
+    let starts: Vec<_> = starts
+        .into_iter()
+        .map(|(at, staff)| json!({ "at": at.to_string(), "staff": staff }))
         .collect();
     booking_http::timing::global().record(Stage::Compute, computing.elapsed());
     Ok(Json(json!({
@@ -414,7 +431,9 @@ async fn availability(
         "from": from.to_string(),
         "days": q.days,
         "as_of": inputs.now.to_string(),
-        "slots": slots,
+        "duration_minutes": inputs.service.duration_minutes,
+        "staff_ids": staff_ids,
+        "starts": starts,
         "truncated": truncated,
     })))
 }

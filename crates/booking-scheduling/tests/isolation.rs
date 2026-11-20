@@ -152,7 +152,7 @@ async fn one_tenant_never_reads_or_writes_anothers_records() {
     ];
     for path in &reads {
         let answer = kit.get(&a.session, path).await;
-        let empty = answer.status == StatusCode::OK && answer.body["slots"] == json!([]);
+        let empty = answer.status == StatusCode::OK && answer.body["starts"] == json!([]);
         assert!(
             answer.status == StatusCode::NOT_FOUND || empty,
             "{path}: {}",

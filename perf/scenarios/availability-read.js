@@ -56,5 +56,5 @@ export default function () {
     if (res.status !== 503) unexpected.add(1);
     return;
   }
-  if (res.body.indexOf('"start"') < 0) empty.add(1);
+  if (res.body.indexOf('"at"') < 0) empty.add(1);
 }

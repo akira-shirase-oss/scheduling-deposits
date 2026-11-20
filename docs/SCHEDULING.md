@@ -39,12 +39,23 @@ Reads: `GET /business`, `/services`, `/services/{id}`, `/staff` and `/staff/{id}
 
 ## Availability (Read)
 
-`GET /availability?service=&staff=&from=YYYY-MM-DD&days=1..31` answers
-`{service_id, time_zone, from, days, as_of, slots: [{start, end, staff_id}], truncated}`.
-Slots cover the active staff who perform the active service, or the one `staff` given.
-They are sorted by start, then staff, and capped at 5,000 (`truncated: true` past that).
-The inputs are read in one `REPEATABLE READ` snapshot. "Now" is the database clock
-(`as_of`), the same clock that expires holds (D-009).
+`GET /availability?service=&staff=&from=YYYY-MM-DD&days=1..31` answers:
+
+```json
+{"service_id": "…", "time_zone": "Europe/London", "from": "2026-06-01", "days": 1,
+ "as_of": "…", "duration_minutes": 30,
+ "staff_ids": ["…", "…"],
+ "starts": [{"at": "2026-06-01T08:00:00Z", "staff": [0, 1]}, …],
+ "truncated": false}
+```
+
+- Each bookable time appears once, with the indexes (into `staff_ids`) of the staff free
+  then. A slot ends `duration_minutes` after its start (D-017).
+- It covers the active staff who perform the active service, or the one `staff` given.
+- Times are sorted. At most 5,000 (time, staff) pairs are returned, with
+  `truncated: true` past that.
+- The inputs are read in one `REPEATABLE READ` snapshot. "Now" is the database clock
+  (`as_of`), the same clock that expires holds (D-009).
 
 The rules (crate `availability`, D-007):
 

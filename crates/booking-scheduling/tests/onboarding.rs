@@ -165,11 +165,11 @@ async fn a_business_is_set_up_and_offers_slots_across_a_dst_change() {
         async move {
             let a = kit.get(&s, &path).await;
             assert_eq!(a.status, StatusCode::OK, "{}", a.body);
-            a.body["slots"]
+            a.body["starts"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|x| x["start"].as_str().unwrap().to_owned())
+                .map(|x| x["at"].as_str().unwrap().to_owned())
                 .collect::<Vec<_>>()
         }
     };

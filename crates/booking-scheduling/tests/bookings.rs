@@ -162,11 +162,11 @@ async fn buffers_are_part_of_the_blocked_range() {
         )
         .await;
     assert_eq!(a.status, StatusCode::OK, "{}", a.body);
-    let starts: Vec<&str> = a.body["slots"]
+    let starts: Vec<&str> = a.body["starts"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|s| s["start"].as_str().unwrap())
+        .map(|s| s["at"].as_str().unwrap())
         .collect();
     for taken in [
         "09:15", "09:30", "09:45", "10:00", "10:15", "10:30", "10:45", "11:00", "11:15",

@@ -1,0 +1,37 @@
+{
+  "scenario": "availability-read",
+  "mode": "full",
+  "started_utc": "20261120T215403Z",
+  "commit": "85edbd27f00d022364ea3edb32ce917337abf3d4",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "AMD EPYC 9V74 80-Core Processor",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1019-azure",
+    "load_average_before": "3.88, 2.07, 0.83",
+    "load_average_after": "10.43, 9.98, 7.15",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "token-authenticated availability reads, 90% one day, 10% a week, 28 dates, 10 staff",
+  "invariant": null,
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 999660,
+  "requests_per_second": 999.3640296531479,
+  "failed_rate": 0.1640877898485485,
+  "shed_rate": 0.1640877898485485,
+  "dropped_iterations": 340,
+  "latency_ms": {
+    "min": 0.074612,
+    "med": 301.08433249999996,
+    "avg": 256.16170352024847,
+    "p(90)": 324.88150260000003,
+    "p(95)": 332.40527634999995,
+    "p(99)": 353.39931509000013,
+    "max": 464.19132
+  },
+  "rss_kb_at_end": 92936
+}
