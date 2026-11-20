@@ -194,7 +194,7 @@ pub async fn put_service(
     id: Uuid,
     s: &Service,
 ) -> Result<(ServiceRow, bool)> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     lock_business(&mut tx, business).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM services WHERE business_id = $1 AND id = $2)",
@@ -314,7 +314,7 @@ pub async fn put_staff(
     name: &str,
     active: bool,
 ) -> Result<bool> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     lock_business(&mut tx, business).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM staff WHERE business_id = $1 AND id = $2)",
@@ -369,7 +369,7 @@ pub async fn set_staff_services(
     staff: Uuid,
     services: &[Uuid],
 ) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     lock_staff(&mut tx, business, staff).await?;
     let known: i64 =
         sqlx::query_scalar("SELECT count(*) FROM services WHERE business_id = $1 AND id = ANY($2)")
@@ -401,7 +401,7 @@ pub async fn set_hours(
     staff: Uuid,
     hours: &[(i8, Minutes)],
 ) -> Result<()> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     lock_staff(&mut tx, business, staff).await?;
     sqlx::query("DELETE FROM weekly_hours WHERE business_id = $1 AND staff_id = $2")
         .bind(business)
@@ -533,7 +533,7 @@ pub async fn put_exception(
     id: Uuid,
     rule: &ExceptionRule,
 ) -> Result<(ExceptionRow, bool)> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     lock_business(&mut tx, business).await?;
     let exists: bool = sqlx::query_scalar(
         "SELECT EXISTS (SELECT 1 FROM hours_exceptions WHERE business_id = $1 AND id = $2)",
@@ -604,6 +604,13 @@ pub struct Inputs {
     pub now: Timestamp,
 }
 
+/// Begins a transaction, timing the wait for a pooled connection (with its `BEGIN`).
+async fn begin(
+    db: &PgPool,
+) -> std::result::Result<sqlx::Transaction<'static, sqlx::Postgres>, sqlx::Error> {
+    booking_http::timing::timed(booking_http::timing::Stage::PoolWait, db.begin()).await
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "one snapshot transaction, read top to bottom"
@@ -620,7 +627,7 @@ pub async fn inputs(
     days: u32,
     with_busy: bool,
 ) -> Result<Inputs> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
         .execute(&mut *tx)
         .await?;
@@ -833,7 +840,7 @@ pub async fn hold(
     hold: &Hold,
     hold_minutes: u16,
 ) -> Result<(BookingRow, bool)> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     let id = Uuid::now_v7();
     let inserted: Option<Uuid> = sqlx::query_scalar(
         "INSERT INTO bookings (business_id, id, staff_id, service_id, status, starts_at, ends_at,
@@ -887,7 +894,7 @@ pub async fn hold(
 /// Moves a booking to `status` (`confirmed` or `cancelled`); the database enforces which
 /// moves are allowed and that an expired hold cannot be confirmed.
 pub async fn transition(db: &PgPool, business: Uuid, id: Uuid, status: &str) -> Result<BookingRow> {
-    let mut tx = db.begin().await?;
+    let mut tx = begin(db).await?;
     let done = sqlx::query("UPDATE bookings SET status = $3 WHERE business_id = $1 AND id = $2")
         .bind(business)
         .bind(id)

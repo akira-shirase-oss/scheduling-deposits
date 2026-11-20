@@ -18,5 +18,6 @@ pub mod client;
 pub mod serve;
 pub mod shutdown;
 pub mod stack;
+pub mod timing;
 
 pub use serve::{ConnectionLimits, Drained, serve};

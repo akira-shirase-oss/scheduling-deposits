@@ -6,6 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 use booking_accounts::domain::Action;
+use booking_http::timing::{Stage, timed};
 use jiff::tz::TimeZone;
 use serde::Deserialize;
 use serde_json::json;
@@ -65,10 +66,11 @@ async fn authorize(
     workspace: Uuid,
     action: Action,
 ) -> Result<Uuid> {
-    Ok(s.accounts
-        .access(headers, workspace, action)
-        .await?
-        .workspace)
+    Ok(
+        timed(Stage::Auth, s.accounts.access(headers, workspace, action))
+            .await?
+            .workspace,
+    )
 }
 
 fn invalid((code, message): domain::Invalid) -> SchedulingError {
@@ -384,7 +386,12 @@ async fn availability(
     if !(1..=domain::MAX_READ_DAYS).contains(&q.days) {
         return Err(invalid(("invalid_days", "days is 1 to 31")));
     }
-    let inputs = store::inputs(&s.db, b, q.service, q.staff, from, q.days, true).await?;
+    let inputs = timed(
+        Stage::Db,
+        store::inputs(&s.db, b, q.service, q.staff, from, q.days, true),
+    )
+    .await?;
+    let computing = std::time::Instant::now();
     let tz = zone(&inputs.business.settings.time_zone)?;
     let mut slots = availability::slots(
         &tz,
@@ -400,6 +407,7 @@ async fn availability(
         .iter()
         .map(|slot| json!({ "start": slot.start.to_string(), "end": slot.end.to_string(), "staff_id": slot.staff }))
         .collect();
+    booking_http::timing::global().record(Stage::Compute, computing.elapsed());
     Ok(Json(json!({
         "service_id": q.service,
         "time_zone": inputs.business.settings.time_zone,

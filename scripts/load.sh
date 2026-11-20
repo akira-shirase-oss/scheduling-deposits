@@ -128,6 +128,16 @@ fi
 set -e
 load_after="$(uptime | sed 's/.*load averages*: *//')"
 rss_kb="$(ps -o rss= -p "$server" | tr -d ' ' || echo 0)"
+# Server CPU over the whole run (user + system seconds), then a drain so the server logs its
+# own request-time and pool-wait histograms: server time, told apart from the generator's.
+server_cpu_s=0
+if [ -r "/proc/$server/stat" ]; then
+  server_cpu_s="$(awk -v hz="$(getconf CLK_TCK)" '{printf "%.1f", ($14 + $15) / hz}' "/proc/$server/stat")"
+fi
+kill -TERM "$server" 2>/dev/null || true
+wait "$server" 2>/dev/null || true
+server_timing="$(grep -F '"server timings"' "$work/server.log" | tail -1 | jq -c '.fields.report | fromjson' 2>/dev/null || echo null)"
+[ -n "$server_timing" ] || server_timing=null
 if [ "$(uname -s)" = Darwin ]; then
   cpu="$(sysctl -n machdep.cpu.brand_string)"; cores="$(sysctl -n hw.ncpu)"
   mem_gb="$(( $(sysctl -n hw.memsize) / 1073741824 ))"; os="macOS $(sw_vers -productVersion)"
@@ -152,6 +162,7 @@ jq -n --arg mode "$mode" --arg stamp "$stamp" --arg commit "$commit" --argjson d
   --arg load_before "$load_before" --arg load_after "$load_after" --argjson busy "$busy" \
   --argjson rate "$rate" --argjson k6_status "$k6_status" --arg rss_kb "$rss_kb" \
   --arg scenario "$scenario" --arg mix "$mix" --argjson invariant "$invariant" \
+  --argjson server_timing "$server_timing" --arg server_cpu_s "$server_cpu_s" \
   --slurpfile summary "$summary" '
   { scenario: $scenario, mode: $mode, started_utc: $stamp, commit: $commit, tree_dirty: $dirty,
     machine: { cpu: $cpu, cores: ($cores|tonumber), memory_gb: ($mem_gb|tonumber), os: $os,
@@ -166,8 +177,9 @@ jq -n --arg mode "$mode" --arg stamp "$stamp" --arg commit "$commit" --argjson d
     shed_rate: ($summary[0].metrics.shed.value // 0),
     dropped_iterations: ($summary[0].metrics.dropped_iterations.count // 0),
     latency_ms: ($summary[0].metrics.http_req_duration | {min, med, avg, "p(90)", "p(95)", "p(99)", max}),
-    rss_kb_at_end: ($rss_kb|tonumber) }' >"$out"
+    rss_kb_at_end: ($rss_kb|tonumber),
+    server: { cpu_seconds: ($server_cpu_s|tonumber), timing_ms: $server_timing } }' >"$out"
 echo "result: $out"
 scripts/check-results.sh "$out" >/dev/null
-jq '{scenario, mode, commit, invariant, thresholds_passed, requests, requests_per_second, failed_rate, shed_rate, dropped_iterations, latency_ms, machine: {load_average_before: .machine.load_average_before, busy_machine: .machine.busy_machine}}' "$out"
+jq '{scenario, mode, commit, invariant, thresholds_passed, requests, requests_per_second, failed_rate, shed_rate, dropped_iterations, latency_ms, server, machine: {load_average_before: .machine.load_average_before, busy_machine: .machine.busy_machine}}' "$out"
 [ "$k6_status" -eq 0 ] || exit 1

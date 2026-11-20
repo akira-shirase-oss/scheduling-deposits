@@ -150,6 +150,11 @@ async fn run(config: Config) -> Result<Drained, Stop> {
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %listener.local_addr()?, version = env!("CARGO_PKG_VERSION"), "listening");
     let drained = serve(listener, router, config.connection, shutdown).await;
+    tracing::warn!(
+        target: "booking_server::timing",
+        report = %booking_http::timing::global().report(),
+        "server timings"
+    );
     if let Ok(name) = signal.await {
         tracing::info!(signal = name, "drained after signal");
     }

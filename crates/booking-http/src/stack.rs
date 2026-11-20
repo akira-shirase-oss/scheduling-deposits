@@ -198,8 +198,10 @@ pub async fn shed(State(gate): State<Arc<Semaphore>>, request: Request, next: Ne
             "the server is at capacity; retry shortly",
         );
     };
+    let started = std::time::Instant::now();
     let response = next.run(request).await;
     drop(permit);
+    crate::timing::global().record(crate::timing::Stage::Request, started.elapsed());
     response
 }
 
