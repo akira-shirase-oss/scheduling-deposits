@@ -1,0 +1,84 @@
+{
+  "scenario": "availability-read",
+  "mode": "full",
+  "started_utc": "20261120T234813Z",
+  "commit": "6745bf2cabcdd6e3d58b0960442386acf6f9fb80",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) 6973P-C",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1019-azure",
+    "load_average_before": "3.75, 1.70, 0.65",
+    "load_average_after": "3.92, 3.36, 2.45",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "token-authenticated availability reads, 89% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days)",
+  "invariant": null,
+  "thresholds_passed": true,
+  "k6_exit_status": 0,
+  "requests": 1000001,
+  "requests_per_second": 999.9978560927402,
+  "failed_rate": 0,
+  "shed_rate": 0,
+  "dropped_iterations": 0,
+  "latency_ms": {
+    "min": 1.181803,
+    "med": 1.893866,
+    "avg": 2.0466875680844003,
+    "p(90)": 2.467086,
+    "p(95)": 2.674068,
+    "p(99)": 4.92052,
+    "max": 69.255104
+  },
+  "rss_kb_at_end": 59072,
+  "server": {
+    "cpu_seconds": 765.7,
+    "timing_ms": {
+      "auth": {
+        "count": 1000617,
+        "mean_ms": 0.259,
+        "p50_ms": 0.269,
+        "p95_ms": 0.453,
+        "p99_ms": 0.761
+      },
+      "compute": {
+        "count": 1000003,
+        "mean_ms": 0.17,
+        "p50_ms": 0.135,
+        "p95_ms": 0.538,
+        "p99_ms": 0.64
+      },
+      "compute_wait": {
+        "count": 1000003,
+        "mean_ms": 0.0,
+        "p50_ms": 0.01,
+        "p95_ms": 0.01,
+        "p99_ms": 0.01
+      },
+      "db": {
+        "count": 1000003,
+        "mean_ms": 1.319,
+        "p50_ms": 1.28,
+        "p95_ms": 1.81,
+        "p99_ms": 3.62
+      },
+      "pool_wait": {
+        "count": 1000895,
+        "mean_ms": 0.197,
+        "p50_ms": 0.19,
+        "p95_ms": 0.32,
+        "p99_ms": 0.64
+      },
+      "request": {
+        "count": 1000625,
+        "mean_ms": 1.878,
+        "p50_ms": 1.81,
+        "p95_ms": 2.56,
+        "p99_ms": 5.12
+      }
+    }
+  }
+}
