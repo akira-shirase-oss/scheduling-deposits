@@ -556,6 +556,11 @@ async fn place_hold(
     {
         return Err(SchedulingError::SlotUnavailable);
     }
+    // Losers are answered before they queue for the staff member's turn (D-018).
+    // LIMIT(early-loss)
+    if store::lost(&s.db, b, &hold).await? {
+        return Err(SchedulingError::SlotTaken);
+    }
     let _turn = s
         .staff
         .enter(b, hold.staff_id, s.limits.staff_wait)

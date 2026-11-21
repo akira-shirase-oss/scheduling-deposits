@@ -66,6 +66,7 @@ mutations=(
   "compute-share|crates/booking-scheduling/src/compute.rs|share\.clamp\(1, permits\)=>permits|booking-scheduling|budgets|one_workspace_cannot_hold_every_compute_permit"
   "business-lock|crates/booking-scheduling/src/store.rs|FOR NO KEY UPDATE=>FOR UPDATE|booking-scheduling|locks|a_staff_write_and_a_hold_on_the_same_staff_never_deadlock"
   "staff-queue|crates/booking-scheduling/src/queue.rs|Some\(guard\)=>{ drop(guard); None }|booking-scheduling|locks|holds_for_one_staff_member_queue_in_memory_not_on_connections"
+  "early-loss|crates/booking-scheduling/src/routes.rs|if store::lost=>if false && store::lost|booking-scheduling|locks|a_loser_is_answered_without_queueing_behind_the_staff_turn"
   "staff-lock|crates/booking-scheduling/src/store.rs| FOR UPDATE\"=>\"|booking-scheduling|locks|a_hold_waits_on_the_staff_lock_and_the_constraint_refuses_the_overlap"
   "principal-lock|crates/booking-scheduling/src/store.rs|pg_advisory_xact_lock\(=>pg_try_advisory_xact_lock(|booking-scheduling|locks|the_open_hold_cap_counts_a_concurrent_hold_under_the_principal_lock"
   "no-overlap|migrations/0003_scheduling.sql|blocked WITH &&=>blocked WITH =|booking-scheduling|locks|a_hold_waits_on_the_staff_lock_and_the_constraint_refuses_the_overlap"

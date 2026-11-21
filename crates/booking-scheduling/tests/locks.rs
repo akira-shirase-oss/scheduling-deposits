@@ -194,6 +194,54 @@ async fn holds_for_one_staff_member_queue_in_memory_not_on_connections() {
 }
 
 #[tokio::test]
+async fn a_loser_is_answered_without_queueing_behind_the_staff_turn() {
+    let (kit, t, owner) = setup(generous(), "early-loss@example.test").await;
+    let staff = t.staff[0];
+    let taken = ahead(7, "10:00").1;
+    let won = kit.hold(&t, staff, &taken, "winner").await;
+    assert_eq!(won.status, StatusCode::CREATED, "{}", won.body);
+    // An in-flight hold for a free slot has the staff member's turn and waits on the row.
+    let mut x = owner.begin().await.unwrap();
+    sqlx::query("SELECT 1 FROM staff WHERE business_id = $1 AND id = $2 FOR UPDATE")
+        .bind(t.workspace)
+        .bind(staff)
+        .execute(&mut *x)
+        .await
+        .unwrap();
+    let pending = {
+        let (kit, t) = (kit.clone(), t.clone());
+        tokio::spawn(async move { kit.hold(&t, staff, &ahead(7, "12:00").1, "pending").await })
+    };
+    until_waiting(&kit.db.pool, "%FROM staff%FOR UPDATE%", None, &pending).await;
+    // A request for the taken slot has already lost: it is answered, never queued.
+    let loser = {
+        let (kit, t, taken) = (kit.clone(), t.clone(), taken.clone());
+        tokio::spawn(async move { kit.hold(&t, staff, &taken, "loser").await })
+    };
+    for _ in 0..6_000 {
+        assert_eq!(
+            kit.scheduling.holds_waiting(),
+            0,
+            "the loser queued behind the staff member's turn"
+        );
+        if loser.is_finished() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let lost = loser.await.unwrap();
+    assert_eq!(lost.status, StatusCode::CONFLICT, "{}", lost.body);
+    assert_eq!(lost.code(), Some("slot_taken"), "{}", lost.body);
+    x.rollback().await.unwrap();
+    let h = pending.await.unwrap();
+    assert_eq!(h.status, StatusCode::CREATED, "{}", h.body);
+    // A replay of the winner's key is never a loser.
+    let again = kit.hold(&t, staff, &taken, "winner").await;
+    assert_eq!(again.status, StatusCode::OK, "{}", again.body);
+    cleanup(kit).await;
+}
+
+#[tokio::test]
 async fn a_hold_waits_on_the_staff_lock_and_the_constraint_refuses_the_overlap() {
     let (kit, t, owner) = setup(generous(), "staff-lock@example.test").await;
     let staff = t.staff[0];

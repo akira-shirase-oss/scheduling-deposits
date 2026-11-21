@@ -887,6 +887,31 @@ async fn slot_taken(
     .await
 }
 
+/// Whether `hold` has already lost: its slot is held or confirmed by a committed booking and
+/// its idempotency key is unused (a replay is never a loser). Asked on the pool, before the
+/// request queues for its staff member's turn, so the many losers of a contended slot are
+/// answered 409 without waiting behind the one request that may win. Never decides: the
+/// insert in [`hold`] (the exclusion constraint) stays the only arbiter.
+pub async fn lost(db: &PgPool, business: Uuid, hold: &Hold) -> Result<bool> {
+    Ok(sqlx::query_scalar(
+        "SELECT NOT EXISTS (SELECT 1 FROM bookings WHERE business_id = $1 AND idempotency_key = $5)
+            AND EXISTS (
+           SELECT 1 FROM bookings b JOIN services s ON s.business_id = b.business_id AND s.id = $3
+            WHERE b.business_id = $1 AND b.staff_id = $2
+              AND (b.status = 'confirmed' OR (b.status = 'held' AND b.hold_expires_at > now()))
+              AND b.blocked && tstzrange(
+                    to_timestamp($4) - make_interval(mins => s.buffer_before_minutes),
+                    to_timestamp($4) + make_interval(mins => s.duration_minutes + s.buffer_after_minutes)))",
+    )
+    .bind(business)
+    .bind(hold.staff_id)
+    .bind(hold.service_id)
+    .bind(hold.starts_at.as_second())
+    .bind(&hold.idempotency_key)
+    .fetch_one(db)
+    .await?)
+}
+
 /// Places a hold. The database computes the blocked range, expires stale holds in the way,
 /// and refuses an overlap (23P01 → [`SchedulingError::SlotTaken`]). A retry with the same
 /// idempotency key returns the first hold (`false`), or a conflict if the request differs.

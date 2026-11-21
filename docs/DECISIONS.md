@@ -220,15 +220,19 @@ Per principal (member or token, keyed by its id): a read rate, a hold rate, and 
 unexpired holds in a business (END_GOAL invariant 9). The cap is counted after the slot
 is won, under a transaction lock on the principal, so concurrent holds cannot pass it
 together and losers of a slot never wait for it. A hold's start must lie within a day
-before now and 366 days after, checked before any database work. Holds for one staff member
-take turns in memory first (1,024 keyed stripes; a turn waits at
+before now and 366 days after, checked before any database work. A request whose slot a
+committed booking already holds, under an unused idempotency key, has lost: one pooled
+read answers it 409 before it queues (`early-loss`), so the many losers of a contended
+slot never wait behind the one request that may win (the 001b0b3 CI hold run shed 0.97%
+and reached a 460 ms p99 when every loser queued). Holds for one staff member that may
+still win take turns in memory first (1,024 keyed stripes; a turn waits at
 most 2 seconds, then 503), so only the staff member's current hold holds a pool
 connection; inside the transaction it then locks the staff row, which decides across
 processes, so a conflict is a 409 and not a lock wait. Writes bounded per business lock
 the business row `FOR NO KEY UPDATE`: a booking's foreign key takes `KEY SHARE` on it,
 which `FOR UPDATE` would block, and a staff write holding the business while waiting for
 a staff row that an in-flight hold had locked would deadlock with it (a 503). The
-`business-lock`, `staff-queue`, `staff-lock` and `principal-lock` mutants each fail a
+`business-lock`, `early-loss`, `staff-queue`, `staff-lock` and `principal-lock` mutants each fail a
 test in `tests/locks.rs` that holds the contended lock from a second transaction and
 waits until the request is seen waiting on exactly that lock. Each bound has a `LIMIT(...)` marker
 and a test that fails without it (`tests/budgets.rs`, `scripts/prove-limits.sh`).
