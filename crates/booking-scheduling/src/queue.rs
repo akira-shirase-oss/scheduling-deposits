@@ -49,8 +49,9 @@ impl StaffQueue {
         self.waiting.fetch_sub(1, Ordering::Relaxed);
         let guard = guard.ok()?;
         Some(Turn {
+            // LIMIT(staff-queue)
             _guard: Some(guard),
-        }) // LIMIT(staff-queue)
+        })
     }
 
     /// Holds waiting for a turn now.

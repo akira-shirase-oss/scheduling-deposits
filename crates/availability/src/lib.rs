@@ -276,7 +276,7 @@ pub fn slots_within(
     for member in staff {
         let hours = window.day_hours(member, &rules, &mut meter)?;
         let working = window.working(&hours, &mut meter)?;
-        meter.charge(member.busy.len())?;
+        meter.charge(member.busy.len())?; // LIMIT(busy-rows)
         let busy = merged(
             member
                 .busy

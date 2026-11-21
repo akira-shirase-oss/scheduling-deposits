@@ -719,7 +719,6 @@ pub async fn inputs(
         .await?;
         let loaded: usize = rows.iter().map(|r| r.get::<Vec<i64>, _>("f").len()).sum();
         if u64::try_from(loaded).unwrap_or(u64::MAX) > room {
-            // LIMIT(busy-rows)
             return Err(too_much_work());
         }
         for r in rows {
