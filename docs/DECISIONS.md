@@ -83,13 +83,19 @@ hold as `expired` before any writer marks it. Availability's "now" is the databa
 `now()`, so Rust and SQL never disagree about whether a hold is live. The
 `no-db-expiry` mutant run is in the PR.
 
-## D-010 — The hold path never pre-checks overlap in Rust
+## D-010 — The constraint decides overlap; the hold path's pre-check only answers early
 
-The server checks only that the start is a slot by hours, grid, notice and advance: the
-engine runs with no busy ranges. The constraint alone decides overlap. A Rust pre-check
-would race, and it would hide the database's verdict from the concurrency test.
-`concurrent_holds_admit_exactly_one` runs 64 parallel holds × `BOOKING_HOLD_ROUNDS`, with
-one winner per round.
+The server checks that the start is a slot by hours, grid, notice and advance: the engine
+runs with no busy ranges. Inside the hold's transaction, before its staff lock, one
+indexed query (`slot_taken`) looks for a live booking of that staff member overlapping
+the hold's blocked range and answers 409 without locking or inserting. It reads only
+committed rows, so it can miss a concurrent hold; it never decides. Every insert still
+goes through `bookings_no_overlap`, which alone decides overlap, and its violation is the
+same 409. A replay of an idempotency key skips the pre-check. Without the constraint a
+hold racing a concurrent uncommitted one is admitted
+(`a_hold_waits_on_the_staff_lock_and_the_constraint_refuses_the_overlap`, the
+`no-overlap` mutant in `scripts/prove-limits.sh`); `concurrent_holds_admit_exactly_one`
+runs 64 parallel holds × `BOOKING_HOLD_ROUNDS`, with one winner per round.
 
 ## D-011 — Per-business bounds, each with a proof
 
@@ -190,22 +196,41 @@ plus the duration.
 
 ## D-018 — What one caller may make the server do
 
-A read's cost is staff × days × grid points a day, so it is computed from the request
-and the business before anything is loaded, and refused past a budget (default 300,000:
-the D-011 worst case of 100 staff on a 5-minute grid fits for 10 days). The engine walks
-one grid once, in start order across staff, and stops at the answer cap plus one, so
-work and memory per read are bounded by the budget and the page, not by the range; the
-rest is reached with an `after=` cursor. It runs under `spawn_blocking` behind a
-semaphore, so it never occupies an async worker and a burst of reads queues for CPU with
-a deadline instead of all running at once. Busy time is grouped per staff member in SQL.
+A read has a work budget (`BOOKING_AVAILABILITY_MAX_CELLS`, default 300,000 units: the
+D-011 worst case of 100 staff on a 5-minute grid fits for 10 days). Staff × days × grid
+points a day is computed from the request before anything is loaded and refused past
+the budget; busy rows are loaded with a limit of what is left of it, and every row
+counts. The engine then charges what it does against the same budget, refusing with
+`too_much_work` (422) when it runs out: each date of the window, each date an exception
+covers (exceptions are bucketed by staff and date once, never scanned per staff and
+date), each weekly range, each working range, each busy range, each grid point and each
+(grid point, staff member) pair it visits. It walks one grid once, in start order across
+staff, and stops at the answer cap plus one, so work and memory per read are bounded by
+the budget and the page, not by the range or the data; the rest is reached with an
+`after=` cursor. The `availability-work` and `busy-rows` mutants prove the charge.
+
+It runs under `spawn_blocking` behind two permits, both with the `compute_wait`
+deadline: one of the workspace's share (`BOOKING_COMPUTE_PER_WORKSPACE`, default half of
+the permits; workspaces map onto 256 keyed stripes, so memory is fixed and a collision
+only shares a share), then one of the global pool (`BOOKING_COMPUTE_PERMITS`, default
+the cores less one, so the async workers keep a core). One workspace's flood waits on its
+own share and leaves the rest of the pool to the other workspaces (`compute-share`).
 
 Per principal (member or token, keyed by its id): a read rate, a hold rate, and a cap on
 unexpired holds in a business (END_GOAL invariant 9). The cap is counted after the slot
 is won, under a transaction lock on the principal, so concurrent holds cannot pass it
 together and losers of a slot never wait for it. A hold's start must lie within a day
-before now and 366 days after, checked before any database work. A hold first locks its
-staff row, so holds for one staff member are decided one at a time and a conflict is
-always a 409, never a lock wait that ends in a 503. Each bound has a `LIMIT(...)` marker
+before now and 366 days after, checked before any database work. Holds for one staff member
+take turns in memory first (1,024 keyed stripes; a turn waits at
+most 2 seconds, then 503), so only the staff member's current hold holds a pool
+connection; inside the transaction it then locks the staff row, which decides across
+processes, so a conflict is a 409 and not a lock wait. Writes bounded per business lock
+the business row `FOR NO KEY UPDATE`: a booking's foreign key takes `KEY SHARE` on it,
+which `FOR UPDATE` would block, and a staff write holding the business while waiting for
+a staff row that an in-flight hold had locked would deadlock with it (a 503). The
+`business-lock`, `staff-queue`, `staff-lock` and `principal-lock` mutants each fail a
+test in `tests/locks.rs` that holds the contended lock from a second transaction and
+waits until the request is seen waiting on exactly that lock. Each bound has a `LIMIT(...)` marker
 and a test that fails without it (`tests/budgets.rs`, `scripts/prove-limits.sh`).
 
 The rates live in memory: a restart resets them, and they are per process (D-003's one
@@ -232,4 +257,3 @@ defaults); every threshold is unchanged.
   against that invariant and must be removed or restricted to the payment flow.
 - Idempotency keys are unique per business, not per caller. Before a public page, keys
   are scoped to the caller that made them.
-||||||| facea9a
