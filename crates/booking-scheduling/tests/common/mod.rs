@@ -35,6 +35,7 @@ pub struct Kit {
     pub app: Router,
     pub sink: SmtpSink,
     pub accounts: Accounts,
+    pub scheduling: booking_scheduling::Scheduling,
 }
 
 /// What a request authenticates with.
@@ -97,11 +98,9 @@ impl Kit {
         )
         .await
         .unwrap();
-        let product = booking_scheduling::router(booking_scheduling::Scheduling::with_limits(
-            accounts.clone(),
-            db.pool.clone(),
-            limits,
-        ));
+        let scheduling =
+            booking_scheduling::Scheduling::with_limits(accounts.clone(), db.pool.clone(), limits);
+        let product = booking_scheduling::router(scheduling.clone());
         let app = Router::new().nest(
             "/v1",
             booking_accounts::router(accounts.clone()).merge(product),
@@ -118,6 +117,7 @@ impl Kit {
             app,
             sink,
             accounts,
+            scheduling,
         }
     }
 

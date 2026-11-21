@@ -36,14 +36,19 @@ fn small(v: i16) -> u16 {
     u16::try_from(v).unwrap_or(0)
 }
 
-/// Locks the business row: the writes it bounds serialise here.
+/// Locks the business row: the writes it bounds serialise here. `NO KEY UPDATE`, not
+/// `UPDATE`: a booking's foreign key takes `KEY SHARE` on the business, which `UPDATE`
+/// would block — and a hold holding its staff lock while a staff write held the business
+/// and waited for that staff row would deadlock (D-018).
 async fn lock_business(tx: &mut PgConnection, business: Uuid) -> Result<()> {
-    sqlx::query_scalar::<_, i32>("SELECT 1 FROM businesses WHERE workspace_id = $1 FOR UPDATE")
-        .bind(business)
-        .fetch_optional(&mut *tx)
-        .await?
-        .map(|_| ())
-        .ok_or(SchedulingError::BusinessRequired)
+    sqlx::query_scalar::<_, i32>(
+        "SELECT 1 FROM businesses WHERE workspace_id = $1 FOR NO KEY UPDATE", // LIMIT(business-lock)
+    )
+    .bind(business)
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(|_| ())
+    .ok_or(SchedulingError::BusinessRequired)
 }
 
 async fn count(tx: &mut PgConnection, table: &str, business: Uuid) -> Result<i64> {
@@ -672,10 +677,7 @@ pub async fn inputs(
     .await?;
     let cells = availability::cells(ids.len(), days, business_row.settings.slot_step_minutes);
     if cells > max_cells {
-        return Err(SchedulingError::Invalid(
-            "too_much_work",
-            "narrow the read: fewer days or one staff member",
-        ));
+        return Err(too_much_work());
     }
     let hours = sqlx::query(
         "SELECT staff_id, weekday, start_minute, end_minute FROM weekly_hours
@@ -695,21 +697,31 @@ pub async fn inputs(
     let mut busy: HashMap<Uuid, Vec<Busy>> = HashMap::new();
     if with_busy {
         // Grouped per staff member in SQL, in order. Wider than any offset: a booking
-        // outside this cannot touch a slot of these dates.
+        // outside this cannot touch a slot of these dates. Each busy row is work the
+        // engine is charged for, so no more rows load than the budget has left.
+        let room = max_cells.saturating_sub(cells);
         let rows = sqlx::query(
-            "SELECT staff_id,
-                    array_agg(extract(epoch FROM lower(blocked))::bigint ORDER BY lower(blocked)) AS f,
-                    array_agg(extract(epoch FROM upper(blocked))::bigint ORDER BY lower(blocked)) AS u
-               FROM bookings
-              WHERE business_id = $1 AND staff_id = ANY($2)
-                AND status IN ('held', 'confirmed')
-                AND (status = 'confirmed' OR hold_expires_at > now())
-                AND blocked && tstzrange(($3::date - 2)::timestamp AT TIME ZONE 'UTC', ($4::date + 3)::timestamp AT TIME ZONE 'UTC')
-              GROUP BY staff_id",
+            "WITH b AS (
+               SELECT staff_id, lower(blocked) AS lo, upper(blocked) AS hi FROM bookings
+                WHERE business_id = $1 AND staff_id = ANY($2)
+                  AND status IN ('held', 'confirmed')
+                  AND (status = 'confirmed' OR hold_expires_at > now())
+                  AND blocked && tstzrange(($3::date - 2)::timestamp AT TIME ZONE 'UTC', ($4::date + 3)::timestamp AT TIME ZONE 'UTC')
+                LIMIT $5)
+             SELECT staff_id,
+                    array_agg(extract(epoch FROM lo)::bigint ORDER BY lo) AS f,
+                    array_agg(extract(epoch FROM hi)::bigint ORDER BY lo) AS u
+               FROM b GROUP BY staff_id",
         )
         .bind(business).bind(&ids).bind(from.to_string()).bind(last.to_string())
+        .bind(i64::try_from(room.saturating_add(1)).unwrap_or(i64::MAX))
         .fetch_all(&mut *tx)
         .await?;
+        let loaded: usize = rows.iter().map(|r| r.get::<Vec<i64>, _>("f").len()).sum();
+        if u64::try_from(loaded).unwrap_or(u64::MAX) > room {
+            // LIMIT(busy-rows)
+            return Err(too_much_work());
+        }
         for r in rows {
             let (f, u): (Vec<i64>, Vec<i64>) = (r.get("f"), r.get("u"));
             let ranges = f
@@ -908,7 +920,7 @@ pub async fn hold(
         // One staff member's holds are decided one at a time: the exclusion check then
         // meets only committed rows and answers 409, never a wait that ends in a deadlock
         // or a lock timeout (503).
-        sqlx::query("SELECT 1 FROM staff WHERE business_id = $1 AND id = $2 FOR UPDATE")
+        sqlx::query("SELECT 1 FROM staff WHERE business_id = $1 AND id = $2 FOR UPDATE") // LIMIT(staff-lock)
             .bind(business)
             .bind(hold.staff_id)
             .fetch_optional(&mut *tx)
@@ -942,7 +954,7 @@ pub async fn hold(
         // principal taken last (after the slot is won, so losers never wait for it), so
         // concurrent holds cannot pass the cap together.
         sqlx::query(
-            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))",
+            "SELECT pg_advisory_xact_lock(hashtextextended($1::text || '/' || $2::text, 0))", // LIMIT(principal-lock)
         )
         .bind(business)
         .bind(principal)
@@ -1006,4 +1018,12 @@ pub async fn transition(db: &PgPool, business: Uuid, id: Uuid, status: &str) -> 
         .ok_or(SchedulingError::NotFound)?;
     tx.commit().await?;
     Ok(row)
+}
+
+/// The refusal of a read whose work is over the budget (D-018).
+pub(crate) fn too_much_work() -> SchedulingError {
+    SchedulingError::Invalid(
+        "too_much_work",
+        "narrow the read: fewer days or one staff member",
+    )
 }

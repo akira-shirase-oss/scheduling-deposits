@@ -137,7 +137,7 @@ CREATE TABLE bookings (
     -- A hold past its expiry still matches the predicate until it is marked expired, which
     -- bookings_prepare does inside the transaction of any booking that needs its range.
     CONSTRAINT bookings_no_overlap EXCLUDE USING gist (
-        business_id WITH =, staff_id WITH =, blocked WITH &&
+        business_id WITH =, staff_id WITH =, blocked WITH && -- LIMIT(no-overlap)
     ) WHERE (status IN ('held', 'confirmed'))
 );
 CREATE INDEX bookings_starts ON bookings (business_id, starts_at);

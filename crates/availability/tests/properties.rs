@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 
 use availability::{
     Busy, Exception, ExceptionKind, Minutes, Query, STEPS, Service, Staff, WeeklySpan, slots,
-    slots_after,
+    slots_after, slots_within,
 };
 use jiff::Timestamp;
 use jiff::civil::{Date, date};
@@ -300,5 +300,21 @@ proptest! {
             seen.extend_from_slice(keep);
         }
         prop_assert_eq!(seen, all);
+    }
+
+    /// A budget never changes an answer: the read either fits and is whole, or stops with
+    /// `TooMuchWork`; and a larger budget never refuses what a smaller one admitted.
+    #[test]
+    fn a_budget_only_ever_refuses(c in case(), budget in 0u64..4_000) {
+        let tz = TimeZone::get(c.zone).unwrap();
+        let all = slots(&tz, &c.staff, &c.exceptions, c.service, &c.query).unwrap();
+        let within = |budget| slots_within(&tz, &c.staff, &c.exceptions, c.service, &c.query, None, usize::MAX, budget);
+        match within(budget) {
+            Ok(got) => {
+                prop_assert_eq!(&got, &all);
+                prop_assert_eq!(within(budget + 1).unwrap(), all);
+            }
+            Err(e) => prop_assert_eq!(e, availability::Error::TooMuchWork),
+        }
     }
 }

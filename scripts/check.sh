@@ -31,6 +31,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 step "every script explains itself (--help) and refuses unknown arguments"
 scripts/test-help.sh
 
+step "load.sh refuses a RATE or TOTAL that is not a whole number"
+scripts/test-load-args.sh
+
 step "architecture, and that each rule can fail"
 scripts/check-architecture.sh
 expect_failure() {

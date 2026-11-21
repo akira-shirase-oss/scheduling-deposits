@@ -39,6 +39,10 @@ scenario="${SCENARIO:-service}"
 case "$scenario" in service|availability-read|hold-contention) ;; *) echo "SCENARIO must be service, availability-read or hold-contention" >&2; exit 2 ;; esac
 rate="${RATE:-1000}"
 case "$mode" in smoke|full) ;; *) echo "MODE must be smoke or full" >&2; exit 2 ;; esac
+# Both reach shell arithmetic, which evaluates expressions (and command substitutions in
+# array subscripts): digits only, checked before anything else runs.
+[[ "$rate" =~ ^[0-9]+$ ]] && (( 10#$rate > 0 )) || { echo "RATE must be a positive whole number" >&2; exit 2; }
+[[ -z "${TOTAL:-}" || "${TOTAL}" =~ ^[0-9]+$ ]] || { echo "TOTAL must be a whole number" >&2; exit 2; }
 require_database tools
 port="${BOOKING_LOAD_PORT:-63552}"
 sink_port=$((port + 6))
@@ -112,7 +116,7 @@ if [ "$scenario" != service ]; then
   status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$base$w/availability?service=$service&from=${hot}")"
   [ "$status" = 200 ] || { echo "error: the seeded availability read answered $status" >&2; exit 1; }
 fi
-worst_workspace="" worst_token=""
+worst_workspace="" worst_token="" exc_workspace="" exc_token="" exc_from=""
 if [ "$scenario" = availability-read ]; then
   # The D-011 worst case: 100 staff open 00:00-24:00 on a 5-minute grid, read 10 days at a
   # time without staff= (288,000 grid points, under the default work budget of 300,000).
@@ -129,6 +133,29 @@ if [ "$scenario" = availability-read ]; then
   done
   status="$(curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $worst_token" "$base$w/availability?service=$service&from=${hot}&days=10")"
   [ "$status" = 200 ] || { echo "error: the worst-case availability read answered $status" >&2; exit 1; }
+  # The worst case by exceptions: 100 staff open 00:00-24:00 on a 60-minute grid, each with
+  # 10 closures spanning every read's window (1,000 exceptions, the business maximum) that
+  # leave only 24-minute gaps: no slot fits, so a 31-day read walks all 74,400 grid points.
+  exc_workspace="$(api POST /v1/workspaces '{"name":"Exceptions"}' | jq -r '.id')"
+  exc_token="$(api POST "/v1/workspaces/$exc_workspace/tokens" '{"name":"load"}' | jq -r '.token')"
+  w="/v1/workspaces/$exc_workspace"
+  api PUT "$w/business" '{"name":"Exceptions","time_zone":"UTC","currency":"EUR","slot_step_minutes":60,"min_notice_minutes":0,"max_advance_days":365,"hold_minutes":60}' >/dev/null
+  api PUT "$w/services/$service" '{"name":"Exceptions","duration_minutes":30,"buffer_after_minutes":15,"price_minor":4000,"deposit":{"kind":"percent","percent":25}}' | jq -e '.id' >/dev/null
+  exc_first="$(date -u -d '-2 day' +%F)" exc_last="$(date -u -d '+70 day' +%F)" exc_from="$(date -u -d '+1 day' +%F)"
+  for i in $(seq 1 100); do
+    staff="00000000-0000-7000-b000-$(printf '%012d' "$i")"
+    api PUT "$w/staff/$staff" "{\"name\":\"Staff $i\"}" | jq -e '.id' >/dev/null
+    api PUT "$w/staff/$staff/services" "{\"service_ids\":[\"$service\"]}" >/dev/null
+    api PUT "$w/staff/$staff/hours" "{\"hours\":$hours}" >/dev/null
+    for k in $(seq 0 9); do
+      from=$(( k * 144 )) until=$(( k * 144 + 120 ))
+      api PUT "$w/exceptions/00000000-0000-7000-c$(printf '%03d' "$k")-$(printf '%012d' "$i")" \
+        "{\"staff_id\":\"$staff\",\"first_date\":\"$exc_first\",\"last_date\":\"$exc_last\",\"kind\":\"closed\",\"start\":\"$(printf '%02d:%02d' $(( from / 60 )) $(( from % 60 )))\",\"end\":\"$(printf '%02d:%02d' $(( until / 60 )) $(( until % 60 )))\"}" | jq -e '.id' >/dev/null
+    done
+  done
+  answer="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer $exc_token" "$base$w/availability?service=$service&from=${exc_from}&days=31")"
+  [ "$(tail -1 <<<"$answer")" = 200 ] || { echo "error: the exceptions worst-case read answered $(tail -1 <<<"$answer")" >&2; exit 1; }
+  head -1 <<<"$answer" | jq -e '.starts == [] and .truncated == false' >/dev/null || { echo "error: the exceptions worst case has a free slot" >&2; exit 1; }
 fi
 if $setup_only; then
   echo "setup ok ($scenario): server ready, account, workspace and token seeded; a token read answers 200 (no load offered)"
@@ -140,7 +167,8 @@ summary="$work/summary.json"
 load_before="$(uptime | sed 's/.*load averages*: *//')"
 set +e
 BASE_URL="$base" TOKEN="$token" SESSION="$session" WORKSPACE="$workspace" SERVICE="$service" \
-  DATES="$dates" SLOTS="$slots" WORST_WORKSPACE="$worst_workspace" WORST_TOKEN="$worst_token" MODE="$mode" RATE="$rate" TOTAL="${TOTAL:-}" \
+  DATES="$dates" SLOTS="$slots" WORST_WORKSPACE="$worst_workspace" WORST_TOKEN="$worst_token" \
+  EXC_WORKSPACE="$exc_workspace" EXC_TOKEN="$exc_token" EXC_FROM="$exc_from" MODE="$mode" RATE="$rate" TOTAL="${TOTAL:-}" \
   k6 run --quiet --summary-export "$summary" "perf/scenarios/$scenario.js"
 k6_status=$?
 invariant=null
@@ -194,7 +222,7 @@ mkdir -p "$outdir"
 out="$outdir/${stamp}-${scenario}-${mode}.json"
 case "$scenario" in
   service) mix="90% token-authenticated workspace reads, 10% /livez" ;;
-  availability-read) mix="token-authenticated availability reads, 89% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days)" ;;
+  availability-read) mix="token-authenticated availability reads, 88% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days), 1% the exceptions worst case (100 staff, 1,000 exceptions, 60-minute grid, 31 days, no free slot)" ;;
   hold-contention) mix="session-authenticated holds racing for 50 non-overlapping hot slots (10 staff x 5 starts) per 45 s round, two alternating sets, one-minute holds, fresh idempotency keys" ;;
 esac
 jq -n --arg mode "$mode" --arg stamp "$stamp" --arg commit "$commit" --argjson dirty "$dirty" \

@@ -57,6 +57,8 @@ pub enum Error {
     Step,
     #[error("the service duration or a buffer is out of range")]
     Service,
+    #[error("the read needs more work than its budget")]
+    TooMuchWork,
     #[error("the dates are outside the supported range")]
     OutOfRange,
 }
@@ -114,16 +116,6 @@ pub struct Exception {
     pub first: Date,
     pub last: Date,
     pub kind: ExceptionKind,
-}
-
-impl Exception {
-    fn covers(&self, date: Date) -> bool {
-        self.first <= date && date <= self.last
-    }
-
-    fn applies_to(&self, staff: Uuid) -> bool {
-        self.staff.is_none_or(|s| s == staff)
-    }
 }
 
 /// A range already taken, `[from, until)`: a confirmed booking or a live hold, buffers
@@ -213,6 +205,41 @@ pub fn slots_after(
     after: Option<Timestamp>,
     limit: usize,
 ) -> Result<Vec<Slot>, Error> {
+    slots_within(
+        tz,
+        staff,
+        exceptions,
+        service,
+        query,
+        after,
+        limit,
+        u64::MAX,
+    )
+}
+
+/// [`slots_after`] with a work budget: every step of the read — each civil date, each
+/// exception's covered dates, each weekly range, each working or busy range, each grid
+/// point and each (start, member) pair walked — costs one unit, and the read stops with
+/// [`Error::TooMuchWork`] as soon as it has spent `budget`. A read's work is therefore
+/// bounded by its budget whatever the schedule holds.
+///
+/// # Errors
+///
+/// As [`slots`], and [`Error::TooMuchWork`] past the budget.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the engine's inputs, one per argument like `slots_after`"
+)]
+pub fn slots_within(
+    tz: &TimeZone,
+    staff: &[Staff],
+    exceptions: &[Exception],
+    service: Service,
+    query: &Query,
+    after: Option<Timestamp>,
+    limit: usize,
+    budget: u64,
+) -> Result<Vec<Slot>, Error> {
     if query.days == 0 || query.days > MAX_DAYS {
         return Err(Error::Range);
     }
@@ -229,7 +256,10 @@ pub fn slots_after(
     {
         return Err(Error::Service);
     }
+    let mut meter = Meter { left: budget };
     let window = Window::new(tz, query)?;
+    meter.charge(window.dates.len() + window.pieces.len())?;
+    let rules = window.rules(exceptions, &mut meter)?;
     let duration = i64::from(service.duration_minutes) * 60;
     let before = i64::from(service.buffer_before_minutes) * 60;
     let after_buffer = i64::from(service.buffer_after_minutes) * 60;
@@ -242,25 +272,26 @@ pub fn slots_after(
         .as_second()
         .saturating_add(i64::from(query.max_advance_days) * DAY);
 
-    let mut members: Vec<(Uuid, Ranges, Ranges)> = staff
-        .iter()
-        .map(|member| {
-            let hours = window.day_hours(member, exceptions);
-            let busy = merged(
-                member
-                    .busy
-                    .iter()
-                    .map(|b| (b.from.as_second(), b.until.as_second()))
-                    .filter(|(a, b)| a < b)
-                    .collect(),
-            );
-            (member.id, window.working(&hours), busy)
-        })
-        .collect();
+    let mut members: Vec<(Uuid, Ranges, Ranges)> = Vec::with_capacity(staff.len());
+    for member in staff {
+        let hours = window.day_hours(member, &rules, &mut meter)?;
+        let working = window.working(&hours, &mut meter)?;
+        meter.charge(member.busy.len())?;
+        let busy = merged(
+            member
+                .busy
+                .iter()
+                .map(|b| (b.from.as_second(), b.until.as_second()))
+                .filter(|(a, b)| a < b)
+                .collect(),
+        );
+        members.push((member.id, working, busy));
+    }
     members.sort_unstable_by_key(|m| m.0);
     // One grid for every member, walked in start order: the answer comes out sorted, and
     // generation stops at `limit`.
     let grid = window.grid(query.step_minutes);
+    meter.charge(grid.len())?;
     let skip = after.map_or(0, |a| grid.partition_point(|&g| g <= a.as_second()));
     let mut out = Vec::new();
     for &start in &grid[skip..] {
@@ -270,6 +301,7 @@ pub fn slots_after(
         if start < earliest {
             continue;
         }
+        meter.charge(members.len())?;
         let end = start + duration;
         for (id, working, busy) in &members {
             if !inside(working, start, end) || overlaps(busy, start - before, end + after_buffer) {
@@ -286,6 +318,28 @@ pub fn slots_after(
         }
     }
     Ok(out)
+}
+
+/// Units of work left to a read.
+struct Meter {
+    left: u64,
+}
+
+impl Meter {
+    fn charge(&mut self, units: usize) -> Result<(), Error> {
+        let units = u64::try_from(units).unwrap_or(u64::MAX);
+        // LIMIT(availability-work)
+        self.left = self.left.checked_sub(units).ok_or(Error::TooMuchWork)?;
+        Ok(())
+    }
+}
+
+/// The exceptions of a window, bucketed once by civil date: the business-wide closures of
+/// each date (merged minute ranges; `None` for the whole day) and each member's own
+/// exceptions of each date.
+struct Rules {
+    everyone: Vec<Option<Vec<(u16, u16)>>>,
+    own: std::collections::HashMap<Uuid, Vec<Vec<ExceptionKind>>>,
 }
 
 /// Merged `[from, until)` ranges in seconds.
@@ -335,54 +389,122 @@ impl Window {
         })
     }
 
+    /// The window's dates an exception covers, as indexes into `dates`.
+    fn covered(&self, e: &Exception) -> std::ops::Range<usize> {
+        let base = self.first_day - 1;
+        let len = i64::try_from(self.dates.len()).unwrap_or(i64::MAX);
+        let lo = (days_from_civil(e.first) - base).clamp(0, len);
+        let hi = (days_from_civil(e.last) - base + 1).clamp(lo, len);
+        usize::try_from(lo).unwrap_or(0)..usize::try_from(hi).unwrap_or(0)
+    }
+
+    /// Buckets `exceptions` by date once; each exception costs the dates it covers.
+    fn rules(&self, exceptions: &[Exception], meter: &mut Meter) -> Result<Rules, Error> {
+        let n = self.dates.len();
+        let mut closed: Vec<Vec<(u16, u16)>> = vec![Vec::new(); n];
+        let mut whole = vec![false; n];
+        let mut own: std::collections::HashMap<Uuid, Vec<Vec<ExceptionKind>>> =
+            std::collections::HashMap::new();
+        for e in exceptions {
+            let dates = self.covered(e);
+            meter.charge(dates.len().max(1))?;
+            match (e.staff, e.kind) {
+                (None, ExceptionKind::Closed(None)) => whole[dates].fill(true),
+                (None, ExceptionKind::Closed(Some(m))) => {
+                    for k in dates {
+                        closed[k].push((m.start, m.end));
+                    }
+                }
+                // An open exception is staff-specific; one for everyone has no meaning.
+                (None, ExceptionKind::Open(_)) => {}
+                (Some(id), kind) => {
+                    let days = own.entry(id).or_insert_with(|| vec![Vec::new(); n]);
+                    for k in dates {
+                        days[k].push(kind);
+                    }
+                }
+            }
+        }
+        let everyone = closed
+            .into_iter()
+            .zip(whole)
+            .map(|(ranges, whole)| (!whole).then(|| merged(ranges)))
+            .collect();
+        Ok(Rules { everyone, own })
+    }
+
     /// The working minutes of `member` on each civil date of the window, sorted and merged.
-    fn day_hours(&self, member: &Staff, exceptions: &[Exception]) -> Vec<Vec<(u16, u16)>> {
+    fn day_hours(
+        &self,
+        member: &Staff,
+        rules: &Rules,
+        meter: &mut Meter,
+    ) -> Result<Vec<Vec<(u16, u16)>>, Error> {
+        meter.charge(member.weekly.len())?;
+        let mut weekly: [Vec<(u16, u16)>; 7] = Default::default();
+        for w in &member.weekly {
+            if let Some(day) = usize::try_from(w.weekday - 1)
+                .ok()
+                .and_then(|d| weekly.get_mut(d))
+            {
+                day.push((w.span.start, w.span.end));
+            }
+        }
+        let own = rules.own.get(&member.id);
         let mut out = Vec::with_capacity(self.dates.len());
-        for &date in &self.dates {
-            let opens: Vec<(u16, u16)> = exceptions
+        for (k, &date) in self.dates.iter().enumerate() {
+            let mine: &[ExceptionKind] = own.and_then(|d| d.get(k)).map_or(&[], Vec::as_slice);
+            let opens: Vec<(u16, u16)> = mine
                 .iter()
-                .filter(|e| e.staff == Some(member.id) && e.covers(date))
-                .filter_map(|e| match e.kind {
+                .filter_map(|kind| match kind {
                     ExceptionKind::Open(m) => Some((m.start, m.end)),
                     ExceptionKind::Closed(_) => None,
                 })
                 .collect();
-            let weekday = date.weekday().to_monday_one_offset();
-            let mut spans = if opens.is_empty() {
-                member
-                    .weekly
-                    .iter()
-                    .filter(|w| w.weekday == weekday)
-                    .map(|w| (w.span.start, w.span.end))
-                    .collect()
+            let weekday = usize::try_from(date.weekday().to_monday_one_offset() - 1).unwrap_or(0);
+            let spans = if opens.is_empty() {
+                weekly.get(weekday).cloned().unwrap_or_default()
             } else {
                 opens
             };
-            for e in exceptions
-                .iter()
-                .filter(|e| e.applies_to(member.id) && e.covers(date))
-            {
-                match e.kind {
-                    ExceptionKind::Closed(None) => spans.clear(),
-                    ExceptionKind::Closed(Some(m)) => spans = subtract(&spans, m.start, m.end),
+            meter.charge(1 + mine.len() + spans.len())?;
+            // Closures commute: the member's own and the business's, subtracted in one pass.
+            let mut closed = Vec::new();
+            let mut whole = false;
+            for kind in mine {
+                match *kind {
+                    ExceptionKind::Closed(None) => whole = true,
+                    ExceptionKind::Closed(Some(m)) => closed.push((m.start, m.end)),
                     ExceptionKind::Open(_) => {}
                 }
             }
+            match rules.everyone.get(k) {
+                Some(Some(everyone)) => closed.extend_from_slice(everyone),
+                _ => whole = true,
+            }
+            let spans = if whole {
+                Vec::new()
+            } else {
+                meter.charge(closed.len())?;
+                subtract_all(&merged(spans), &merged(closed))
+            };
             out.push(merged(spans));
         }
-        out
+        Ok(out)
     }
 
     /// Working time as merged instant ranges (seconds).
-    fn working(&self, hours: &[Vec<(u16, u16)>]) -> Vec<(i64, i64)> {
+    fn working(&self, hours: &[Vec<(u16, u16)>], meter: &mut Meter) -> Result<Ranges, Error> {
         let mut ranges = Vec::new();
         for &(from, until, offset) in &self.pieces {
             let (civil_from, civil_until) = (from + offset, until + offset);
+            meter.charge(hours.len())?;
             for (day, spans) in (self.first_day - 1..).zip(hours) {
                 let day_start = day * DAY;
                 if day_start + DAY <= civil_from || day_start >= civil_until {
                     continue;
                 }
+                meter.charge(spans.len())?;
                 for &(s, e) in spans {
                     let a = (day_start + i64::from(s) * 60).max(civil_from);
                     let b = (day_start + i64::from(e) * 60).min(civil_until);
@@ -392,7 +514,7 @@ impl Window {
                 }
             }
         }
-        merged(ranges)
+        Ok(merged(ranges))
     }
 
     /// Every instant at which a grid wall time of a requested date occurs, ascending.
@@ -455,18 +577,25 @@ fn merged<T: Ord + Copy>(mut ranges: Vec<(T, T)>) -> Vec<(T, T)> {
     out
 }
 
-fn subtract(spans: &[(u16, u16)], from: u16, until: u16) -> Vec<(u16, u16)> {
-    let mut out = Vec::with_capacity(spans.len() + 1);
+/// `spans` minus every range of `closed`; both sorted and merged, one pass over each.
+fn subtract_all(spans: &[(u16, u16)], closed: &[(u16, u16)]) -> Vec<(u16, u16)> {
+    let mut out = Vec::with_capacity(spans.len() + closed.len());
+    let mut j = 0;
     for &(a, b) in spans {
-        if b <= from || a >= until {
-            out.push((a, b));
-            continue;
+        let mut cursor = a;
+        while j < closed.len() && closed[j].1 <= cursor {
+            j += 1;
         }
-        if a < from {
-            out.push((a, from));
+        let mut i = j;
+        while i < closed.len() && closed[i].0 < b {
+            if closed[i].0 > cursor {
+                out.push((cursor, closed[i].0));
+            }
+            cursor = cursor.max(closed[i].1);
+            i += 1;
         }
-        if b > until {
-            out.push((until, b));
+        if cursor < b {
+            out.push((cursor, b));
         }
     }
     out
@@ -509,8 +638,12 @@ mod tests {
             merged(vec![(5, 7), (1, 3), (3, 4), (6, 9)]),
             vec![(1, 4), (5, 9)]
         );
-        assert_eq!(subtract(&[(0, 10)], 3, 5), vec![(0, 3), (5, 10)]);
-        assert_eq!(subtract(&[(0, 10)], 0, 10), vec![]);
+        assert_eq!(subtract_all(&[(0, 10)], &[(3, 5)]), vec![(0, 3), (5, 10)]);
+        assert_eq!(subtract_all(&[(0, 10)], &[(0, 10)]), vec![]);
+        assert_eq!(
+            subtract_all(&[(0, 10), (20, 30)], &[(5, 8), (9, 22), (25, 26), (40, 50)]),
+            vec![(0, 5), (8, 9), (22, 25), (26, 30)]
+        );
         let r = [(0, 10), (20, 30)];
         assert!(
             inside(&r, 0, 10) && inside(&r, 22, 30) && !inside(&r, 5, 21) && !inside(&r, -1, 3)

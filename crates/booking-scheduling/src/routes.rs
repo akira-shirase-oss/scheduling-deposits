@@ -389,6 +389,7 @@ const fn one() -> u32 {
 fn engine_error(e: &availability::Error) -> SchedulingError {
     match e {
         availability::Error::OutOfRange => invalid(("invalid_date", "the dates are out of range")),
+        availability::Error::TooMuchWork => store::too_much_work(),
         _ => {
             SchedulingError::Internal(anyhow::anyhow!("availability refused validated input: {e}"))
         }
@@ -447,17 +448,16 @@ async fn availability(
     // The engine is CPU work: off the async workers, a bounded number at once.
     let permit = timed(
         Stage::ComputeWait,
-        tokio::time::timeout(s.limits.compute_wait, s.compute.clone().acquire_owned()),
+        s.compute.acquire(b, s.limits.compute_wait),
     )
     .await
-    .map_err(|_| SchedulingError::Unavailable)?
-    .map_err(|_| SchedulingError::Unavailable)?;
+    .ok_or(SchedulingError::Unavailable)?;
     let days = q.days;
     let service_id = q.service;
     let answer = tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let started = std::time::Instant::now();
-        let slots = availability::slots_after(
+        let slots = availability::slots_within(
             &tz,
             &inputs.staff,
             &inputs.exceptions,
@@ -465,6 +465,7 @@ async fn availability(
             &query_of(&inputs, from, days),
             after,
             domain::MAX_SLOTS.saturating_add(1),
+            max_cells,
         )
         .map_err(|e| engine_error(&e));
         let out = slots.map(|slots| {
@@ -555,6 +556,11 @@ async fn place_hold(
     {
         return Err(SchedulingError::SlotUnavailable);
     }
+    let _turn = s
+        .staff
+        .enter(b, hold.staff_id, s.limits.staff_wait)
+        .await
+        .ok_or(SchedulingError::Unavailable)?;
     let (row, created) = store::hold(
         &s.db,
         b,

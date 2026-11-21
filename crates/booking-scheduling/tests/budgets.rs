@@ -67,6 +67,109 @@ async fn a_read_over_the_work_budget_is_refused_before_the_engine_runs() {
 }
 
 #[tokio::test]
+async fn exceptions_count_in_the_work_budget() {
+    // 2 staff × 96 points: one day is 192 cells, well inside the budget. 200 business-wide
+    // closures of one minute each are work the cell count does not see.
+    let limits = booking_scheduling::Limits {
+        max_cells: 1_000,
+        ..generous()
+    };
+    let kit = Kit::bounded(|_| {}, limits).await;
+    let t = kit.tenant("exceptions-work@example.test", "UTC").await;
+    let w = format!("/v1/workspaces/{}", t.workspace);
+    let (date, _) = ahead(3, "00:00");
+    let read = format!("{w}/availability?service={}&from={date}&days=1", t.service);
+    assert_eq!(kit.get(&t.session, &read).await.status, StatusCode::OK);
+    let (first, _) = ahead(1, "00:00");
+    let (last, _) = ahead(30, "00:00");
+    for k in 0..200u16 {
+        let (from, until) = (k * 7, k * 7 + 1);
+        let e = kit
+            .put(
+                &t.session,
+                &format!("{w}/exceptions/{}", uuid::Uuid::now_v7()),
+                json!({ "first_date": first, "last_date": last, "kind": "closed",
+                        "start": format!("{:02}:{:02}", from / 60, from % 60),
+                        "end": format!("{:02}:{:02}", until / 60, until % 60) }),
+            )
+            .await;
+        assert_eq!(e.status, StatusCode::CREATED, "{}", e.body);
+    }
+    let over = kit.get(&t.session, &read).await;
+    assert_eq!(
+        over.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        over.body
+    );
+    assert_eq!(over.code(), Some("too_much_work"));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn busy_rows_count_in_the_work_budget() {
+    // One staff member, one day: 96 cells and about 215 units of engine work (grid, walk,
+    // dates and hours); 52 busy rows take it past 240.
+    let limits = booking_scheduling::Limits {
+        max_cells: 240,
+        ..generous()
+    };
+    let kit = Kit::bounded(|_| {}, limits).await;
+    let t = kit.tenant("busy-work@example.test", "UTC").await;
+    let w = format!("/v1/workspaces/{}", t.workspace);
+    let (date, _) = ahead(3, "00:00");
+    let read = format!(
+        "{w}/availability?service={}&from={date}&days=1&staff={}",
+        t.service, t.staff[0]
+    );
+    let fits = kit.get(&t.session, &read).await;
+    assert_eq!(fits.status, StatusCode::OK, "{}", fits.body);
+    // 13 holds a day (45 minutes apart, 08:00-17:30) on the read's day and the days
+    // around it: every one is a busy row the read loads.
+    let mut made = 0;
+    for day in 2..=5 {
+        for slot in 0..13 {
+            let minute = 8 * 60 + slot * 45;
+            let at = ahead(day, &format!("{:02}:{:02}", minute / 60, minute % 60)).1;
+            let h = kit.hold(&t, t.staff[0], &at, &format!("busy-{made}")).await;
+            assert_eq!(h.status, StatusCode::CREATED, "{}", h.body);
+            made += 1;
+        }
+    }
+    let over = kit.get(&t.session, &read).await;
+    assert_eq!(
+        over.status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "{}",
+        over.body
+    );
+    assert_eq!(over.code(), Some("too_much_work"));
+    kit.db.cleanup().await;
+}
+
+#[tokio::test]
+async fn one_workspace_cannot_hold_every_compute_permit() {
+    let compute = booking_scheduling::compute::Compute::new(4, 1);
+    let a = uuid::Uuid::now_v7();
+    let b = std::iter::repeat_with(uuid::Uuid::now_v7)
+        .find(|b| !compute.same_share(a, *b))
+        .unwrap();
+    let wait = Duration::from_secs(30);
+    let held = compute.acquire(a, wait).await.unwrap();
+    // A's share is spent: its next read waits out its deadline and is refused (503) ...
+    assert!(
+        compute
+            .acquire(a, Duration::from_millis(20))
+            .await
+            .is_none()
+    );
+    // ... while another workspace's reads still get permits.
+    let _b1 = compute.acquire(b, wait).await.unwrap();
+    drop(held);
+    let _a = compute.acquire(a, wait).await.unwrap();
+}
+
+#[tokio::test]
 async fn paging_with_after_visits_every_slot_once_in_order() {
     let kit = Kit::new().await;
     let t = kit.tenant("pages@example.test", "UTC").await;

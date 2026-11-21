@@ -50,12 +50,17 @@ pub const VARIABLES: &[(&str, &str, &str)] = &[
     (
         "BOOKING_AVAILABILITY_MAX_CELLS",
         "300000",
-        "1000..=10000000: staff x days x grid points a day one read may walk",
+        "1000..=10000000: units of work one read may spend (grid points walked, dates, exceptions, ranges, busy rows)",
     ),
     (
         "BOOKING_COMPUTE_PERMITS",
         "0",
-        "0..=256: availability computations at once; 0 is the CPU count",
+        "0..=256: availability computations at once; 0 is the CPU count less one",
+    ),
+    (
+        "BOOKING_COMPUTE_PER_WORKSPACE",
+        "0",
+        "0..=256: of those, how many one workspace may hold at once; 0 is half, rounded up",
     ),
     (
         "BOOKING_READ_RATE_PER_SECOND",
@@ -380,13 +385,20 @@ impl Config {
         let read_rate: u32 = p.number(source, "BOOKING_READ_RATE_PER_SECOND", 1..=100_000);
         let hold_rate: u32 = p.number(source, "BOOKING_HOLD_RATE_PER_SECOND", 1..=100_000);
         let compute_permits: usize = p.number(source, "BOOKING_COMPUTE_PERMITS", 0..=256);
+        let compute_share: usize = p.number(source, "BOOKING_COMPUTE_PER_WORKSPACE", 0..=256);
         let defaults = booking_scheduling::Limits::default();
+        let compute_permits = if compute_permits == 0 {
+            defaults.compute_permits
+        } else {
+            compute_permits
+        };
         let scheduling = booking_scheduling::Limits {
             max_cells: p.number(source, "BOOKING_AVAILABILITY_MAX_CELLS", 1_000..=10_000_000),
-            compute_permits: if compute_permits == 0 {
-                defaults.compute_permits
+            compute_permits,
+            compute_per_workspace: if compute_share == 0 {
+                compute_permits.div_ceil(2)
             } else {
-                compute_permits
+                compute_share
             },
             read_rate: booking_http::budget::Rate::new(
                 read_rate.saturating_mul(3),
