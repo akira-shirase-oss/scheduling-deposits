@@ -1,0 +1,37 @@
+{
+  "scenario": "availability-read",
+  "mode": "smoke",
+  "started_utc": "20261120T201921Z",
+  "commit": "b1894396da93d5a71ad492612bbdf3535ecebc39",
+  "tree_dirty": true,
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) Processor",
+    "cores": 8,
+    "memory_gb": 31,
+    "os": "Linux 6.8.0-1060-aws",
+    "load_average_before": "4.35, 1.61, 0.79",
+    "load_average_after": "4.61, 2.45, 1.18",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "token-authenticated availability reads, 90% one day, 10% a week, 28 dates, 10 staff",
+  "invariant": null,
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 99991,
+  "requests_per_second": 999.8490172987233,
+  "failed_rate": 0,
+  "shed_rate": 0,
+  "dropped_iterations": 10,
+  "latency_ms": {
+    "min": 2.166643,
+    "med": 4.738955,
+    "avg": 6.1222217345761605,
+    "p(90)": 9.654511,
+    "p(95)": 11.322287,
+    "p(99)": 18.915657300000067,
+    "max": 136.222213
+  },
+  "rss_kb_at_end": 140940
+}

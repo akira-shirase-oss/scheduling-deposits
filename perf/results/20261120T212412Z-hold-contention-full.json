@@ -1,0 +1,41 @@
+{
+  "scenario": "hold-contention",
+  "mode": "full",
+  "started_utc": "20261120T212412Z",
+  "commit": "a1d131f657690a38bf3ffe6200a5e591eac61cff",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "AMD EPYC 9V45 96-Core Processor",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1020-azure",
+    "load_average_before": "4.65, 2.06, 0.79",
+    "load_average_after": "7.36, 6.98, 4.99",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "session-authenticated holds racing for 50 hot slots (10 staff x 5 starts), fresh idempotency keys",
+  "invariant": {
+    "overlapping_live_pairs": 0,
+    "holds_created": 18,
+    "hot_slots": 50
+  },
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 999752,
+  "requests_per_second": 999.7463840166644,
+  "failed_rate": 0.004661155966679736,
+  "shed_rate": 0.004661155966679736,
+  "dropped_iterations": 249,
+  "latency_ms": {
+    "min": 0.051848,
+    "med": 3.574277,
+    "avg": 7.558478959778052,
+    "p(90)": 5.815857400000001,
+    "p(95)": 9.738544599999988,
+    "p(99)": 107.62703622999973,
+    "max": 532.322873
+  },
+  "rss_kb_at_end": 57260
+}

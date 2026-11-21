@@ -4,7 +4,8 @@
 //!
 //! Exit codes: 0 drained cleanly; 1 failed, or the drain deadline cut connections;
 //! 2 configuration refused; 3 the role or the protections refused (`booking_db::guard`);
-//! 4 the schema is not exactly this binary's (`booking_db::schema`).
+//! 4 the schema is not exactly this binary's (`booking_db::schema`); 5 a business's time
+//! zone is not in the zone database (availability would be wrong for it).
 
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -67,6 +68,10 @@ fn main() -> ExitCode {
             tracing::error!(schema = %status, "refusing to run: the schema is not this binary's; see docs/OPERATIONS.md");
             ExitCode::from(4)
         }
+        Err(Stop::Zones(zones)) => {
+            tracing::error!(zones = %zones, "refusing to run: these time zones are not in the zone database (install tzdata or set TZDIR)");
+            ExitCode::from(5)
+        }
         Err(Stop::Failed(e)) => {
             tracing::error!(error = %format!("{e:#}"), "stopped");
             ExitCode::FAILURE
@@ -77,6 +82,7 @@ fn main() -> ExitCode {
 enum Stop {
     Refused(String),
     Schema(String),
+    Zones(String),
     Failed(anyhow::Error),
 }
 
@@ -105,6 +111,16 @@ async fn run(config: Config) -> Result<Drained, Stop> {
     if let Err(refused) = guarded {
         return Err(Stop::Refused(refused.to_string()));
     }
+    let zones = booking_scheduling::store::zones(&pool)
+        .await
+        .map_err(|e| Stop::Failed(anyhow::anyhow!("reading the businesses' time zones: {e}")))?;
+    let missing: Vec<String> = zones
+        .into_iter()
+        .filter(|z| booking_scheduling::zone(z).is_err())
+        .collect();
+    if !missing.is_empty() {
+        return Err(Stop::Zones(missing.join(", ")));
+    }
     let mail: Arc<dyn MailTransport> = if let Some(relay) = config.smtp_relay {
         Arc::new(SmtpRelay::new(relay)?)
     } else {
@@ -122,8 +138,14 @@ async fn run(config: Config) -> Result<Drained, Stop> {
         config.error_rate_permille,
         config.error_min_requests,
     );
+    let scheduling = booking_scheduling::Scheduling::with_limits(
+        accounts.clone(),
+        pool.clone(),
+        config.scheduling,
+    );
     let router = app(AppState {
         accounts,
+        scheduling,
         health,
         errors,
         stack: config.stack,
@@ -132,6 +154,11 @@ async fn run(config: Config) -> Result<Drained, Stop> {
     let listener = TcpListener::bind(config.listen).await?;
     tracing::info!(listen = %listener.local_addr()?, version = env!("CARGO_PKG_VERSION"), "listening");
     let drained = serve(listener, router, config.connection, shutdown).await;
+    tracing::warn!(
+        target: "booking_server::timing",
+        report = %booking_http::timing::global().report(),
+        "server timings"
+    );
     if let Ok(name) = signal.await {
         tracing::info!(signal = name, "drained after signal");
     }

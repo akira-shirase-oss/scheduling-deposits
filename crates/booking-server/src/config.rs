@@ -47,6 +47,36 @@ pub const VARIABLES: &[(&str, &str, &str)] = &[
     ("BOOKING_REQUEST_TIMEOUT_MS", "5000", "100..=120000"),
     ("BOOKING_MAX_BODY_BYTES", "65536", "1024..=16777216"),
     ("BOOKING_MAX_IN_FLIGHT", "64", "1..=100000"),
+    (
+        "BOOKING_AVAILABILITY_MAX_CELLS",
+        "300000",
+        "1000..=10000000: units of work one read may spend (grid points walked, dates, exceptions, ranges, busy rows)",
+    ),
+    (
+        "BOOKING_COMPUTE_PERMITS",
+        "0",
+        "0..=256: availability computations at once; 0 is the CPU count less one",
+    ),
+    (
+        "BOOKING_COMPUTE_PER_WORKSPACE",
+        "0",
+        "0..=256: of those, how many one workspace may hold at once; 0 is half, rounded up",
+    ),
+    (
+        "BOOKING_READ_RATE_PER_SECOND",
+        "20",
+        "1..=100000: availability reads per principal (burst 3 s of it)",
+    ),
+    (
+        "BOOKING_HOLD_RATE_PER_SECOND",
+        "2",
+        "1..=100000: holds per principal (burst 10 s of it)",
+    ),
+    (
+        "BOOKING_OPEN_HOLDS_PER_PRINCIPAL",
+        "50",
+        "1..=1000000: unexpired holds one principal may have in a business",
+    ),
     ("BOOKING_DB_MAX_CONNECTIONS", "16", "1..=1000"),
     ("BOOKING_DB_ACQUIRE_TIMEOUT_MS", "2000", "100..=60000"),
     ("BOOKING_DB_STATEMENT_TIMEOUT_MS", "3000", "100..=600000"),
@@ -183,6 +213,7 @@ pub struct Config {
     pub smtp_relay: Option<SocketAddr>,
     /// The accounts kit.
     pub accounts: Settings,
+    pub scheduling: booking_scheduling::Limits,
 }
 
 /// Where settings and secrets come from (the process, or a test's map).
@@ -350,6 +381,36 @@ impl Config {
             max_body_bytes: p.number(source, "BOOKING_MAX_BODY_BYTES", 1024..=16_777_216),
         };
         let max_in_flight = p.number(source, "BOOKING_MAX_IN_FLIGHT", 1..=100_000);
+        let per_second = |n: u32| std::time::Duration::from_secs_f64(1.0 / f64::from(n.max(1)));
+        let read_rate: u32 = p.number(source, "BOOKING_READ_RATE_PER_SECOND", 1..=100_000);
+        let hold_rate: u32 = p.number(source, "BOOKING_HOLD_RATE_PER_SECOND", 1..=100_000);
+        let compute_permits: usize = p.number(source, "BOOKING_COMPUTE_PERMITS", 0..=256);
+        let compute_share: usize = p.number(source, "BOOKING_COMPUTE_PER_WORKSPACE", 0..=256);
+        let defaults = booking_scheduling::Limits::default();
+        let compute_permits = if compute_permits == 0 {
+            defaults.compute_permits
+        } else {
+            compute_permits
+        };
+        let scheduling = booking_scheduling::Limits {
+            max_cells: p.number(source, "BOOKING_AVAILABILITY_MAX_CELLS", 1_000..=10_000_000),
+            compute_permits,
+            compute_per_workspace: if compute_share == 0 {
+                compute_permits.div_ceil(2)
+            } else {
+                compute_share
+            },
+            read_rate: booking_http::budget::Rate::new(
+                read_rate.saturating_mul(3),
+                per_second(read_rate),
+            ),
+            hold_rate: booking_http::budget::Rate::new(
+                hold_rate.saturating_mul(10),
+                per_second(hold_rate),
+            ),
+            open_holds: p.number(source, "BOOKING_OPEN_HOLDS_PER_PRINCIPAL", 1..=1_000_000),
+            ..defaults
+        };
         let db = PoolSettings {
             max_connections: p.number(source, "BOOKING_DB_MAX_CONNECTIONS", 1..=1_000),
             acquire_timeout: p.millis(source, "BOOKING_DB_ACQUIRE_TIMEOUT_MS", 100..=60_000),
@@ -465,6 +526,7 @@ impl Config {
                 log_format,
                 smtp_relay,
                 accounts,
+                scheduling,
             })
         } else {
             Err(p.0)

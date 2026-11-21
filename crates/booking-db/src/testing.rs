@@ -123,7 +123,7 @@ impl TestDb {
             crate::pool::connect_options(&self.url_as(role), &crate::PoolSettings::default())
                 .expect("invariant: the test URL parses");
         PgPoolOptions::new()
-            .max_connections(8)
+            .max_connections(64)
             .acquire_timeout(Duration::from_secs(5))
             .connect_with(options)
             .await

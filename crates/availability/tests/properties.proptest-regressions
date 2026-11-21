@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 0aa3489db4a3faa685c976e7f49ab841f18b40e1d85ea7cd47c5fc3836943a05 # shrinks to c = Case { zone: "America/New_York", query: Query { from: 2026-11-01, days: 1, now: 2026-11-01T04:00:00Z, min_notice_minutes: 0, max_advance_days: 1, step_minutes: 5 }, service: Service { duration_minutes: 5, buffer_before_minutes: 0, buffer_after_minutes: 40 }, staff: [Staff { id: 00000000-0000-0000-0000-000000000001, weekly: [WeeklySpan { weekday: 7, span: Minutes { start: 640, end: 1080 } }], busy: [Busy { from: 2026-11-01T15:45:00Z, until: 2026-11-01T15:46:00Z }] }], exceptions: [] }

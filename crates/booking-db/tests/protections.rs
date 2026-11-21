@@ -81,7 +81,7 @@ async fn the_server_refuses_a_role_with_createrole() {
 }
 
 /// Each weakening: what it is, who does it, the SQL, and the problem the manifest must name.
-const WEAKENINGS: [(&str, Role, &str, &str); 13] = [
+const WEAKENINGS: [(&str, Role, &str, &str); 17] = [
     (
         "drop an append-only trigger",
         Role::Owner,
@@ -155,6 +155,33 @@ const WEAKENINGS: [(&str, Role, &str, &str); 13] = [
         Role::Owner,
         "GRANT CREATE ON SCHEMA public TO booking_app",
         "booking_app may create objects",
+    ),
+    (
+        "drop the double-booking constraint",
+        Role::Owner,
+        "ALTER TABLE bookings DROP CONSTRAINT bookings_no_overlap",
+        "constraint bookings.bookings_no_overlap is missing",
+    ),
+    (
+        "narrow the double-booking constraint to confirmed bookings (holds no longer guarded)",
+        Role::Owner,
+        "ALTER TABLE bookings DROP CONSTRAINT bookings_no_overlap; \
+         ALTER TABLE bookings ADD CONSTRAINT bookings_no_overlap EXCLUDE USING gist \
+         (business_id WITH =, staff_id WITH =, blocked WITH &&) WHERE (status = 'confirmed')",
+        "constraint bookings.bookings_no_overlap is not defined as the migrations left it",
+    ),
+    (
+        "replace the booking trigger function so stale holds are never expired",
+        Role::Owner,
+        "CREATE OR REPLACE FUNCTION public.bookings_prepare() RETURNS trigger LANGUAGE plpgsql \
+          SECURITY INVOKER SET search_path = pg_catalog, pg_temp AS $$ BEGIN RETURN NEW; END $$",
+        "function bookings_prepare is not defined as the migrations left it",
+    ),
+    (
+        "grant the runtime role DELETE on bookings",
+        Role::Owner,
+        "GRANT DELETE ON bookings TO booking_app",
+        "booking_app holds [DELETE,INSERT,SELECT,UPDATE] on bookings",
     ),
     (
         "hand a table to another owner",

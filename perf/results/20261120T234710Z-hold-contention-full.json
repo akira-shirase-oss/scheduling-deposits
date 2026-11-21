@@ -1,0 +1,91 @@
+{
+  "scenario": "hold-contention",
+  "mode": "full",
+  "started_utc": "20261120T234710Z",
+  "commit": "c25b2529146cb0e812c5208d05cc1df7f1d1aa53",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "INTEL(R) XEON(R) PLATINUM 8573C",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1020-azure",
+    "load_average_before": "2.84, 0.94, 0.33",
+    "load_average_after": "6.17, 5.12, 3.49",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "session-authenticated holds racing for 50 non-overlapping hot slots (10 staff x 5 starts) per 45 s round, two alternating sets, one-minute holds, fresh idempotency keys",
+  "invariant": {
+    "overlapping_live_pairs": 0,
+    "holds_created": 1150,
+    "holds_expected": 1150,
+    "rounds": 23,
+    "hot_slots": 50,
+    "expired_by_the_database": 1050
+  },
+  "thresholds_passed": true,
+  "k6_exit_status": 0,
+  "requests": 1000001,
+  "requests_per_second": 999.9974435730917,
+  "failed_rate": 0,
+  "shed_rate": 0,
+  "dropped_iterations": 0,
+  "latency_ms": {
+    "min": 1.699428,
+    "med": 2.653233,
+    "avg": 3.012469491548579,
+    "p(90)": 3.133048,
+    "p(95)": 3.863366,
+    "p(99)": 14.427641,
+    "max": 157.580092
+  },
+  "rss_kb_at_end": 45512,
+  "server": {
+    "cpu_seconds": 707.0,
+    "timing_ms": {
+      "auth": {
+        "count": 1000314,
+        "mean_ms": 0.596,
+        "p50_ms": 0.538,
+        "p95_ms": 0.905,
+        "p99_ms": 3.62
+      },
+      "compute": {
+        "count": 1,
+        "mean_ms": 0.167,
+        "p50_ms": 0.19,
+        "p95_ms": 0.19,
+        "p99_ms": 0.19
+      },
+      "compute_wait": {
+        "count": 1,
+        "mean_ms": 0.0,
+        "p50_ms": 0.01,
+        "p95_ms": 0.01,
+        "p99_ms": 0.01
+      },
+      "db": {
+        "count": 1,
+        "mean_ms": 1.937,
+        "p50_ms": 2.153,
+        "p95_ms": 2.153,
+        "p99_ms": 2.153
+      },
+      "pool_wait": {
+        "count": 2000594,
+        "mean_ms": 0.253,
+        "p50_ms": 0.226,
+        "p95_ms": 0.453,
+        "p99_ms": 1.522
+      },
+      "request": {
+        "count": 1000320,
+        "mean_ms": 2.771,
+        "p50_ms": 2.56,
+        "p95_ms": 3.62,
+        "p99_ms": 14.482
+      }
+    }
+  }
+}

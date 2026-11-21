@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Proves scripts/check-architecture.sh catches a database driver linked into booking-http in
 # every form a manifest allows: plain, optional behind a feature, and target-specific; and
-# test support enabled in the shipped build. Each variant patches a throwaway copy; the
+# test support enabled in the shipped build; and a runtime linked into the availability
+# engine. Each variant patches a throwaway copy; the
 # check must fail on it, for that reason.
 set -euo pipefail
 case "${1:-}" in -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;; esac
@@ -11,7 +12,7 @@ cd "$(dirname "$0")/.."
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 status=0
-for variant in plain optional target shipped; do
+for variant in plain optional target shipped pure; do
   ws="$work/$variant"
   mkdir -p "$ws"
   tar --exclude ./target --exclude ./.git -cf - . | tar -xf - -C "$ws"
@@ -19,6 +20,7 @@ for variant in plain optional target shipped; do
     plain) printf '\n[dependencies.sqlx]\nworkspace = true\n' >>"$ws/crates/booking-http/Cargo.toml"; expect='must not depend on sqlx' ;;
     optional) printf '\n[dependencies.sqlx]\nworkspace = true\noptional = true\n\n[features]\ndb = ["dep:sqlx"]\n' >>"$ws/crates/booking-http/Cargo.toml"; expect='must not depend on sqlx' ;;
     target) printf "\n[target.'cfg(windows)'.dependencies.sqlx]\nworkspace = true\n" >>"$ws/crates/booking-http/Cargo.toml"; expect='must not depend on sqlx' ;;
+    pure) printf '\n[dependencies.tokio]\nworkspace = true\n' >>"$ws/crates/availability/Cargo.toml"; expect='availability engine must not depend on tokio' ;;
     shipped) sed -i.bak 's|^booking-db.workspace = true$|booking-db = { workspace = true, features = ["test-support"] }|' "$ws/crates/booking-server/Cargo.toml"; expect='enables the test-support feature' ;;
   esac
   # --offline, not --locked: the patched manifest changes the lockfile, which is the point.

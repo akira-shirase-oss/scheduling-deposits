@@ -31,6 +31,9 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 step "every script explains itself (--help) and refuses unknown arguments"
 scripts/test-help.sh
 
+step "load.sh refuses a RATE or TOTAL that is not a whole number"
+scripts/test-load-args.sh
+
 step "architecture, and that each rule can fail"
 scripts/check-architecture.sh
 expect_failure() {
@@ -42,6 +45,7 @@ expect_failure() {
 expect_failure ARCH_HTTP_BANNED=tokio
 expect_failure ARCH_DOMAIN_PATTERN='pub fn'
 expect_failure ARCH_SHIPPED_FEATURE=json
+expect_failure ARCH_PURE_BANNED=jiff
 scripts/test-architecture-check.sh
 
 step "pins, and that the check can fail on an image and on an action, each alone"

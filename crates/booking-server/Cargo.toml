@@ -23,6 +23,7 @@ sqlx.workspace = true
 booking-accounts.workspace = true
 booking-db.workspace = true
 booking-http.workspace = true
+booking-scheduling.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
 tracing.workspace = true

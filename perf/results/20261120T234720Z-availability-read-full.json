@@ -1,0 +1,84 @@
+{
+  "scenario": "availability-read",
+  "mode": "full",
+  "started_utc": "20261120T234720Z",
+  "commit": "c25b2529146cb0e812c5208d05cc1df7f1d1aa53",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "Intel(R) Xeon(R) 6975P-C",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1016-aws",
+    "load_average_before": "2.77, 0.92, 0.34",
+    "load_average_after": "2.52, 2.52, 1.87",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "token-authenticated availability reads, 89% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days)",
+  "invariant": null,
+  "thresholds_passed": true,
+  "k6_exit_status": 0,
+  "requests": 1000001,
+  "requests_per_second": 999.9967548567761,
+  "failed_rate": 0,
+  "shed_rate": 0,
+  "dropped_iterations": 0,
+  "latency_ms": {
+    "min": 0.975742,
+    "med": 1.753572,
+    "avg": 1.9093994524125562,
+    "p(90)": 2.33822,
+    "p(95)": 2.537227,
+    "p(99)": 5.376898,
+    "max": 67.303675
+  },
+  "rss_kb_at_end": 62976,
+  "server": {
+    "cpu_seconds": 746.8,
+    "timing_ms": {
+      "auth": {
+        "count": 1000617,
+        "mean_ms": 0.236,
+        "p50_ms": 0.226,
+        "p95_ms": 0.381,
+        "p99_ms": 0.905
+      },
+      "compute": {
+        "count": 1000003,
+        "mean_ms": 0.18,
+        "p50_ms": 0.135,
+        "p95_ms": 0.64,
+        "p99_ms": 0.64
+      },
+      "compute_wait": {
+        "count": 1000003,
+        "mean_ms": 0.0,
+        "p50_ms": 0.01,
+        "p95_ms": 0.01,
+        "p99_ms": 0.01
+      },
+      "db": {
+        "count": 1000003,
+        "mean_ms": 1.202,
+        "p50_ms": 1.28,
+        "p95_ms": 1.522,
+        "p99_ms": 3.62
+      },
+      "pool_wait": {
+        "count": 1000895,
+        "mean_ms": 0.173,
+        "p50_ms": 0.16,
+        "p95_ms": 0.32,
+        "p99_ms": 0.761
+      },
+      "request": {
+        "count": 1000625,
+        "mean_ms": 1.747,
+        "p50_ms": 1.81,
+        "p95_ms": 2.56,
+        "p99_ms": 5.12
+      }
+    }
+  }
+}

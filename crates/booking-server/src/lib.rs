@@ -14,6 +14,7 @@ use booking_accounts::Accounts;
 use booking_accounts::domain::Action;
 use booking_accounts::error::AccountsError;
 use booking_http::stack::{self, ErrorWindow, StackLimits};
+use booking_scheduling::Scheduling;
 use serde_json::json;
 use uuid::Uuid;
 
@@ -24,6 +25,8 @@ use crate::health::Health;
 pub struct AppState {
     /// The accounts kit.
     pub accounts: Accounts,
+    /// The product's routes' state.
+    pub scheduling: Scheduling,
     /// Readiness and the error window.
     pub health: Health,
     /// The error window the stack counts into.
@@ -54,6 +57,7 @@ pub fn app(state: AppState) -> Router {
         .with_state(state.accounts.clone());
     let v1 = booking_accounts::router(state.accounts.clone())
         .merge(product)
+        .merge(booking_scheduling::router(state.scheduling.clone()))
         .route_layer(axum::middleware::from_fn_with_state(
             stack::gate(state.max_in_flight),
             stack::shed,

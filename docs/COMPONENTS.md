@@ -50,7 +50,8 @@ Dependabot weekly (grouped minor and patch; a semver-major comes alone).
 | thiserror, anyhow | 2.0.21, 1.0.104 | errors (libraries, binaries) |
 | tracing, tracing-subscriber | 0.1.44, 0.3.23 | JSON logs |
 | uuid, time, hex | 1.29.2, 0.3.55, 0.4.3 | ids, times, encoding |
-| proptest (tests only) | 1.12.0 | the plan-limit property test |
+| jiff | 1.0.1 | time zones and civil time for availability (`std`, `tz-system`, `tzdb-zoneinfo`; D-013) |
+| proptest (tests only) | 1.12.0 | the plan-limit, domain and availability property tests |
 
 `sha2` 0.11 and `getrandom` 0.4 are newer majors; Dependabot proposes each as its own pull
 request, which the copy takes when it has read their changes.
