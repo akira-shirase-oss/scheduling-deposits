@@ -1,0 +1,84 @@
+{
+  "scenario": "availability-read",
+  "mode": "full",
+  "started_utc": "20261121T125724Z",
+  "commit": "7a0d4b5b046958c3006a4c5b350bbcb2c3965458",
+  "tree_dirty": false,
+  "machine": {
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "cores": 4,
+    "memory_gb": 15,
+    "os": "Linux 7.0.0-1020-azure",
+    "load_average_before": "2.98, 1.30, 0.51",
+    "load_average_after": "13.81, 14.06, 9.95",
+    "busy_machine": false,
+    "note": "same-machine load generator: a development observation, not capacity"
+  },
+  "offered_rate_per_second": 1000,
+  "mix": "token-authenticated availability reads, 88% one day, 10% a week (28 dates, 10 staff), 1% the D-011 worst case (100 staff, 5-minute grid, 10 days), 1% the exceptions worst case (100 staff, 1,000 exceptions, 60-minute grid, 31 days, no free slot)",
+  "invariant": null,
+  "thresholds_passed": false,
+  "k6_exit_status": 99,
+  "requests": 1000001,
+  "requests_per_second": 999.9665671882242,
+  "failed_rate": 0.003791996208003792,
+  "shed_rate": 0.003791996208003792,
+  "dropped_iterations": 0,
+  "latency_ms": {
+    "min": 0.125122,
+    "med": 11.928757,
+    "avg": 33.756323740601424,
+    "p(90)": 74.010511,
+    "p(95)": 193.91252,
+    "p(99)": 293.397386,
+    "max": 453.11381
+  },
+  "rss_kb_at_end": 79016,
+  "server": {
+    "cpu_seconds": 1235.7,
+    "timing_ms": {
+      "auth": {
+        "count": 998128,
+        "mean_ms": 12.238,
+        "p50_ms": 1.81,
+        "p95_ms": 97.42,
+        "p99_ms": 163.84
+      },
+      "compute": {
+        "count": 996212,
+        "mean_ms": 0.581,
+        "p50_ms": 0.269,
+        "p95_ms": 1.81,
+        "p99_ms": 6.089
+      },
+      "compute_wait": {
+        "count": 996212,
+        "mean_ms": 0.12,
+        "p50_ms": 0.01,
+        "p95_ms": 0.905,
+        "p99_ms": 2.153
+      },
+      "db": {
+        "count": 996212,
+        "mean_ms": 19.51,
+        "p50_ms": 8.611,
+        "p95_ms": 115.852,
+        "p99_ms": 163.84
+      },
+      "pool_wait": {
+        "count": 998405,
+        "mean_ms": 12.055,
+        "p50_ms": 1.522,
+        "p95_ms": 97.42,
+        "p99_ms": 163.84
+      },
+      "request": {
+        "count": 998138,
+        "mean_ms": 33.016,
+        "p50_ms": 12.177,
+        "p95_ms": 194.84,
+        "p99_ms": 327.68
+      }
+    }
+  }
+}
